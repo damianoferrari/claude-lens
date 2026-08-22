@@ -318,25 +318,67 @@ func (db *DB) GetTokenTotals(ctx context.Context, sessionID string, since *float
 	return t, nil
 }
 
-// GetSessionStats returns per-session aggregates, most recently active first.
-func (db *DB) GetSessionStats(ctx context.Context) ([]SessionStat, error) {
-	rows, err := db.sql.QueryContext(ctx,
-		`SELECT session_id, MAX(session_name),
+// sessionStatsColumns is the column list shared by GetSessionStats and
+// GetSessionStatsSince — both aggregate the same shape, just scoped
+// differently.
+const sessionStatsColumns = `session_id, MAX(session_name),
 		        COUNT(*),
 		        COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
 		        COALESCE(SUM(cache_creation_tokens), 0), COALESCE(SUM(cache_read_tokens), 0),
 		        COALESCE(SUM(cost), 0), SUM(input_cost), SUM(output_cost),
-		        MAX(timestamp)
+		        MAX(timestamp)`
+
+// GetSessionStats returns a page of per-session aggregates, most recently
+// active first.
+func (db *DB) GetSessionStats(ctx context.Context, limit, offset int) ([]SessionStat, error) {
+	rows, err := db.sql.QueryContext(ctx,
+		`SELECT `+sessionStatsColumns+`
 		 FROM exchanges
 		 GROUP BY session_id
-		 ORDER BY MAX(timestamp) DESC`,
+		 ORDER BY MAX(timestamp) DESC
+		 LIMIT ? OFFSET ?`,
+		limit, offset,
 	)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return scanSessionStats(rows)
+}
 
-	var out []SessionStat
+// CountSessionStats returns how many distinct sessions have logged at least
+// one exchange, for the by-session table's pagination total.
+func (db *DB) CountSessionStats(ctx context.Context) (int, error) {
+	var total int
+	err := db.sql.QueryRowContext(ctx, "SELECT COUNT(DISTINCT session_id) FROM exchanges").Scan(&total)
+	return total, err
+}
+
+// GetSessionStatsSince returns per-session aggregates for exactly the
+// sessions that logged an exchange with id > sinceID, most recently active
+// first. Deriving the changed-session set from exchange ids (rather than a
+// single "latest exchange id" watermark) keeps every session that wrote
+// concurrently within one poll window, not just whichever session happened
+// to own the highest id.
+func (db *DB) GetSessionStatsSince(ctx context.Context, sinceID int64) ([]SessionStat, error) {
+	rows, err := db.sql.QueryContext(ctx,
+		`SELECT `+sessionStatsColumns+`
+		 FROM exchanges
+		 WHERE session_id IN (SELECT DISTINCT session_id FROM exchanges WHERE id > ?)
+		 GROUP BY session_id
+		 ORDER BY MAX(timestamp) DESC`,
+		sinceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return scanSessionStats(rows)
+}
+
+// scanSessionStats scans and closes rows produced by a sessionStatsColumns
+// query.
+func scanSessionStats(rows *sql.Rows) ([]SessionStat, error) {
+	defer rows.Close()
+	out := make([]SessionStat, 0)
 	for rows.Next() {
 		var s SessionStat
 		var totalInputCost, totalOutputCost sql.NullFloat64

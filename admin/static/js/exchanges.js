@@ -1,4 +1,4 @@
-import { esc, costTooltip, tokensTooltip, fmtCost, fmtTime, fmtTokens, extractErrorMessage, initNav, makeAbortable, makeDialogMessage } from './app.js';
+import { esc, costTooltip, tokensTooltip, fmtCost, fmtTime, fmtTokens, extractErrorMessage, initNav, makeAbortable, makeDialogMessage, computePagination, renderPaginationControls, wirePaginationNav } from './app.js';
 
 'use strict';
 
@@ -120,81 +120,7 @@ import { esc, costTooltip, tokensTooltip, fmtCost, fmtTime, fmtTokens, extractEr
   }
 
   // ── Pagination ──────────────────────────────────────────────────────────
-  /**
-   * Clamps a requested page into range: a stale bookmarked page (or one
-   * typed past the last page) degrades to the nearest valid page instead of
-   * rendering empty.
-   * @param {number} reqPage - Requested page number.
-   * @param {number} size - Rows per page.
-   * @param {number} total - Total matching rows.
-   * @returns {{page: number, totalPages: number, from: number, to: number}} Clamped pagination state.
-   */
-  function computePagination(reqPage, size, total) {
-    const totalPages = Math.max(1, Math.ceil(total / size));
-    const page = Math.min(Math.max(reqPage, 1), totalPages);
-    if (total === 0) return { page, totalPages, from: 0, to: 0 };
-    const from = (page - 1) * size + 1;
-    const to = Math.min(from + size - 1, total);
-    return { page, totalPages, from, to };
-  }
-
-  function renderPaginationControls(page, totalPages, from, to, total) {
-    const container = document.getElementById('pagination-controls');
-    if (!container) return;
-
-    const navLink = (label, targetPage, enabled) => enabled
-      ? `<a href="#" data-page="${targetPage}" class="pagination-link text-emerald-600 hover:underline">${label}</a>`
-      : `<span class="text-gray-300">${label}</span>`;
-
-    container.innerHTML = `
-      <div class="flex items-center gap-2 text-gray-500">
-        <label for="page-size-select">Rows per page</label>
-        <select id="page-size-select" class="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
-          ${PAGE_SIZES.map((s) => `<option value="${s}" ${s === pageSize ? 'selected' : ''}>${s}</option>`).join('')}
-        </select>
-        <span>${total > 0 ? `${from}–${to} of ${total}` : '0 of 0'} results</span>
-      </div>
-      <div class="flex items-center gap-3">
-        ${navLink('First', 1, page > 1)}
-        ${navLink('Previous', page - 1, page > 1)}
-        <span class="flex items-center gap-1.5 text-gray-500">
-          Page
-          <input id="page-jump-input" type="number" min="1" max="${totalPages}" value="${page}"
-            class="border border-gray-300 rounded px-2 py-1 text-sm w-16 text-center focus:outline-none focus:ring-1 focus:ring-emerald-500">
-          of ${totalPages}
-        </span>
-        ${navLink('Next', page + 1, page < totalPages)}
-        ${navLink('Last', totalPages, page < totalPages)}
-      </div>`;
-
-    const sizeSelect = document.getElementById('page-size-select');
-    if (sizeSelect) {
-      sizeSelect.addEventListener('change', () => navigate(1, sizeSelect.value, q));
-    }
-
-    const jump = document.getElementById('page-jump-input');
-    if (jump) {
-      jump.addEventListener('focus', () => jump.select());
-      jump.addEventListener('keydown', (e) => {
-        if (e.key !== 'Enter') return;
-        e.preventDefault();
-        jump.blur();
-      });
-      jump.addEventListener('change', () => {
-        let p = parseInt(jump.value, 10);
-        if (!Number.isFinite(p)) p = 1;
-        p = Math.min(Math.max(p, 1), totalPages);
-        navigate(p, pageSize, q);
-      });
-    }
-  }
-
-  document.addEventListener('click', (e) => {
-    const link = e.target.closest('.pagination-link');
-    if (!link) return;
-    e.preventDefault();
-    navigate(Number(link.dataset.page), pageSize, q);
-  });
+  wirePaginationNav('pagination-controls', (page) => navigate(page, pageSize, q));
 
   const loadExchanges = makeAbortable(async (signal) => {
     const searchParams = new URLSearchParams();
@@ -208,7 +134,7 @@ import { esc, costTooltip, tokensTooltip, fmtCost, fmtTime, fmtTokens, extractEr
     if (!res.ok) {
       showFilterError(await extractErrorMessage(res, 'Invalid query.'));
       if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-10 text-center text-gray-400">No exchanges found.</td></tr>';
-      renderPaginationControls(1, 1, 0, 0, 0);
+      renderPaginationControls('pagination-controls', { page: 1, totalPages: 1, from: 0, to: 0, total: 0, pageSize }, PAGE_SIZES, (page, size) => navigate(page, size, q));
       return;
     }
 
@@ -224,7 +150,7 @@ import { esc, costTooltip, tokensTooltip, fmtCost, fmtTime, fmtTokens, extractEr
 
     const pagination = computePagination(requestedPage, pageSize, data.total);
     currentPage = pagination.page;
-    renderPaginationControls(pagination.page, pagination.totalPages, pagination.from, pagination.to, data.total);
+    renderPaginationControls('pagination-controls', { ...pagination, total: data.total, pageSize }, PAGE_SIZES, (page, size) => navigate(page, size, q));
   });
 
   // ── Charts ──────────────────────────────────────────────────────────────

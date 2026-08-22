@@ -326,6 +326,106 @@ export function initNavPolling(intervalMs = 15000) {
 }
 
 /**
+ * Clamps a requested page into range: a stale bookmarked page (or one typed
+ * past the last page) degrades to the nearest valid page instead of
+ * rendering empty.
+ * @param {number} reqPage - Requested page number.
+ * @param {number} size - Rows per page.
+ * @param {number} total - Total matching rows.
+ * @returns {{page: number, totalPages: number, from: number, to: number}} Clamped pagination state.
+ */
+export function computePagination(reqPage, size, total) {
+  const totalPages = Math.max(1, Math.ceil(total / size));
+  const page = Math.min(Math.max(reqPage, 1), totalPages);
+  if (total === 0) return { page, totalPages, from: 0, to: 0 };
+  const from = (page - 1) * size + 1;
+  const to = Math.min(from + size - 1, total);
+  return { page, totalPages, from, to };
+}
+
+/**
+ * Renders a "rows per page" select, an "X–Y of Z results" caption, and
+ * First/Previous/page-jump/Next/Last controls into containerId. Rebuilds the
+ * container's innerHTML on every call and wires only the two elements that
+ * get recreated each time (size select, page-jump input) — First/Previous/
+ * Next/Last links are handled separately by wirePaginationNav, since that
+ * listener only needs to be attached once.
+ * @param {string} containerId - Id of the element to render into.
+ * @param {{page: number, totalPages: number, from: number, to: number, total: number, pageSize: number}} state - Pagination state, e.g. from computePagination plus the active page size.
+ * @param {number[]} pageSizes - Selectable rows-per-page options.
+ * @param {function(number, number): void} onSizeOrJumpChange - Called with (page, size) when the size select or page-jump input changes.
+ */
+export function renderPaginationControls(containerId, state, pageSizes, onSizeOrJumpChange) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const { page, totalPages, from, to, total, pageSize } = state;
+
+  const navLink = (label, targetPage, enabled) => enabled
+    ? `<a href="#" data-page="${targetPage}" class="pagination-link text-emerald-600 hover:underline">${label}</a>`
+    : `<span class="text-gray-300">${label}</span>`;
+
+  container.innerHTML = `
+    <div class="flex items-center gap-2 text-gray-500">
+      <label for="${containerId}-page-size-select">Rows per page</label>
+      <select id="${containerId}-page-size-select" class="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500">
+        ${pageSizes.map((s) => `<option value="${s}" ${s === pageSize ? 'selected' : ''}>${s}</option>`).join('')}
+      </select>
+      <span>${total > 0 ? `${from}–${to} of ${total}` : '0 of 0'} results</span>
+    </div>
+    <div class="flex items-center gap-3">
+      ${navLink('First', 1, page > 1)}
+      ${navLink('Previous', page - 1, page > 1)}
+      <span class="flex items-center gap-1.5 text-gray-500">
+        Page
+        <input id="${containerId}-page-jump-input" type="number" min="1" max="${totalPages}" value="${page}"
+          class="border border-gray-300 rounded px-2 py-1 text-sm w-16 text-center focus:outline-none focus:ring-1 focus:ring-emerald-500">
+        of ${totalPages}
+      </span>
+      ${navLink('Next', page + 1, page < totalPages)}
+      ${navLink('Last', totalPages, page < totalPages)}
+    </div>`;
+
+  const sizeSelect = document.getElementById(`${containerId}-page-size-select`);
+  if (sizeSelect) {
+    sizeSelect.addEventListener('change', () => onSizeOrJumpChange(1, Number(sizeSelect.value)));
+  }
+
+  const jump = document.getElementById(`${containerId}-page-jump-input`);
+  if (jump) {
+    jump.addEventListener('focus', () => jump.select());
+    jump.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      jump.blur();
+    });
+    jump.addEventListener('change', () => {
+      let p = parseInt(jump.value, 10);
+      if (!Number.isFinite(p)) p = 1;
+      p = Math.min(Math.max(p, 1), totalPages);
+      onSizeOrJumpChange(p, pageSize);
+    });
+  }
+}
+
+/**
+ * Wires a one-time delegated click listener for First/Previous/Next/Last
+ * .pagination-link anchors inside #containerId. Kept separate from
+ * renderPaginationControls so repeated re-renders (which replace the
+ * container's innerHTML but not the container itself) don't stack duplicate
+ * listeners.
+ * @param {string} containerId - Id of the pagination container.
+ * @param {function(number): void} onNavigate - Called with the target page number.
+ */
+export function wirePaginationNav(containerId, onNavigate) {
+  document.addEventListener('click', (e) => {
+    const link = e.target.closest(`#${containerId} .pagination-link`);
+    if (!link) return;
+    e.preventDefault();
+    onNavigate(Number(link.dataset.page));
+  });
+}
+
+/**
  * Wraps an async task so a new call cancels its predecessor via AbortSignal,
  * instead of letting a slow, superseded response overwrite fresher data.
  * The wrapped function forwards its own args after the injected signal, e.g.

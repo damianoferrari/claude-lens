@@ -1,4 +1,4 @@
-import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbortable, initNav, progressBar, fmtSessionId, fmtActivePeriod } from './app.js';
+import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbortable, initNav, progressBar, fmtSessionId, fmtActivePeriod, computePagination, renderPaginationControls, wirePaginationNav } from './app.js';
 
 'use strict';
 
@@ -103,7 +103,12 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
   });
 
   // ── Per-session table ─────────────────────────────────────────────────────
+  const SESSION_PAGE_SIZES = [25, 50, 100, 200];
+  const DEFAULT_SESSION_PAGE_SIZE = 50;
   let lastSessionRows = [];
+  let sessionPage = 1;
+  let sessionPageSize = DEFAULT_SESSION_PAGE_SIZE;
+  let sessionTotal = 0;
 
   function sessionLimiterCell(session) {
     const l = limitersBySession.get(session.session_id);
@@ -141,11 +146,62 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
       : '<tr><td colspan="9" class="px-4 py-8 text-center text-gray-400">No sessions yet.</td></tr>';
   }
 
+  function renderSessionPagination() {
+    const pagination = computePagination(sessionPage, sessionPageSize, sessionTotal);
+    sessionPage = pagination.page;
+    renderPaginationControls('session-pagination-controls', { ...pagination, total: sessionTotal, pageSize: sessionPageSize }, SESSION_PAGE_SIZES, (page, size) => {
+      sessionPage = page;
+      sessionPageSize = size;
+      refreshSessionStats();
+    });
+  }
+
+  wirePaginationNav('session-pagination-controls', (page) => {
+    sessionPage = page;
+    refreshSessionStats();
+  });
+
   const refreshSessionStats = makeAbortable(async (signal) => {
-    const res = await fetch('/api/session-stats', { signal });
+    const searchParams = new URLSearchParams();
+    searchParams.set('limit', sessionPageSize);
+    searchParams.set('offset', (sessionPage - 1) * sessionPageSize);
+    const res = await fetch('/api/session-stats?' + searchParams.toString(), { signal });
     if (!res.ok) return;
-    lastSessionRows = await res.json();
+    const data = await res.json();
+    lastSessionRows = data.rows;
+    sessionTotal = data.total;
     renderSessionRows();
+    renderSessionPagination();
+  });
+
+  /**
+   * Merges a since_id delta into the currently-loaded page of session rows.
+   * On page 1 (sorted most-recently-active first), the changed sessions are
+   * always now the most recent, so they're moved to the top and the page is
+   * re-trimmed to size — reproducing what a full page-1 refetch would show.
+   * On any other page, changed sessions are only patched in place when
+   * already visible on that page; a session that moved onto/off of this page
+   * stays as-is until the user navigates, the same tolerance the exchanges
+   * page already accepts for its own non-front pages.
+   * @param {object[]} changedRows - Session stat rows from GetSessionStatsSince, most-recently-active first.
+   */
+  function applySessionDelta(changedRows) {
+    if (!changedRows.length) return;
+    const changedIds = new Set(changedRows.map((r) => r.session_id));
+    if (sessionPage === 1) {
+      lastSessionRows = [...changedRows, ...lastSessionRows.filter((r) => !changedIds.has(r.session_id))].slice(0, sessionPageSize);
+    } else {
+      const byId = new Map(changedRows.map((r) => [r.session_id, r]));
+      lastSessionRows = lastSessionRows.map((r) => byId.get(r.session_id) ?? r);
+    }
+    renderSessionRows();
+  }
+
+  const refreshSessionStatsSince = makeAbortable(async (signal, sinceID) => {
+    const res = await fetch('/api/session-stats?since_id=' + sinceID, { signal });
+    if (!res.ok) return;
+    const data = await res.json();
+    applySessionDelta(data.rows);
   });
 
   // ── Heatmap ─────────────────────────────────────────────────────────────
@@ -312,6 +368,13 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
   });
 
   // ── Live updates ──────────────────────────────────────────────────────────
+  // syncedExchangeID tracks the last exchange id the by-session table has
+  // incorporated, so onNewExchange can ask for exactly what changed since
+  // then instead of refetching/rebuilding the whole table on every tick.
+  // Module-level (not reset on reconnectNav) since it's a global exchange-id
+  // watermark, unrelated to the SSE range scope.
+  let syncedExchangeID = 0;
+
   // reconnectNav closes any existing SSE connection and opens a new one
   // scoped to the current range.
   let navHandle = null;
@@ -319,8 +382,10 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
     navHandle?.close();
     navHandle = initNav(range, {
       onTotals: renderTotals,
-      onNewExchange: () => {
-        refreshSessionStats();
+      onNewExchange: (latestId) => {
+        const sinceID = syncedExchangeID;
+        syncedExchangeID = latestId;
+        if (sinceID > 0) refreshSessionStatsSince(sinceID);
         refreshDailyCosts();
       },
       onLimitersChanged: refreshLimiters,

@@ -281,12 +281,58 @@ func TestSessionStats(t *testing.T) {
 	}
 
 	rec := doJSON(t, s, http.MethodGet, "/api/session-stats", nil)
-	var rows []database.SessionStat
-	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+	var resp sessionStatsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(rows) != 1 || rows[0].SessionID != "s1" {
-		t.Errorf("unexpected session stats: %+v", rows)
+	if len(resp.Rows) != 1 || resp.Rows[0].SessionID != "s1" || resp.Total != 1 {
+		t.Errorf("unexpected session stats: %+v", resp)
+	}
+}
+
+func TestSessionStatsPagination(t *testing.T) {
+	s, db := newTestServer(t)
+	ctx := context.Background()
+	for i, id := range []string{"a", "b", "c"} {
+		if err := db.SaveExchange(ctx, database.Exchange{SessionID: id, Path: "/p", Timestamp: float64(1000 + i), RawRequest: "{}", RawResponse: "{}"}); err != nil {
+			t.Fatalf("SaveExchange: %v", err)
+		}
+	}
+
+	rec := doJSON(t, s, http.MethodGet, "/api/session-stats?limit=2&offset=0", nil)
+	var resp sessionStatsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Rows) != 2 || resp.Total != 3 {
+		t.Fatalf("got %d rows, total %d; want 2 rows, total 3", len(resp.Rows), resp.Total)
+	}
+	if resp.Rows[0].SessionID != "c" {
+		t.Errorf("expected most-recent session first, got %+v", resp.Rows[0])
+	}
+}
+
+func TestSessionStatsSince(t *testing.T) {
+	s, db := newTestServer(t)
+	ctx := context.Background()
+	if err := db.SaveExchange(ctx, database.Exchange{SessionID: "a", Path: "/p", Timestamp: 1000, RawRequest: "{}", RawResponse: "{}"}); err != nil {
+		t.Fatalf("SaveExchange: %v", err)
+	}
+	firstPage, err := db.GetExchanges(ctx, "", 1, 0)
+	if err != nil || len(firstPage) != 1 {
+		t.Fatalf("GetExchanges: rows=%+v err=%v", firstPage, err)
+	}
+	if err := db.SaveExchange(ctx, database.Exchange{SessionID: "b", Path: "/p", Timestamp: 1001, RawRequest: "{}", RawResponse: "{}"}); err != nil {
+		t.Fatalf("SaveExchange: %v", err)
+	}
+
+	rec := doJSON(t, s, http.MethodGet, fmt.Sprintf("/api/session-stats?since_id=%d", firstPage[0].ID), nil)
+	var resp sessionStatsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Rows) != 1 || resp.Rows[0].SessionID != "b" {
+		t.Errorf("expected only session b in delta, got %+v", resp.Rows)
 	}
 }
 

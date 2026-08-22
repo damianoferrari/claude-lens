@@ -177,8 +177,60 @@ func (h *handlers) totals(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, t)
 }
 
+// sessionStatsResponse wraps a page of per-session aggregates with the total
+// distinct-session count, mirroring exchangesResponse's shape. Total is
+// omitted for the since_id delta mode, which doesn't need it.
+type sessionStatsResponse struct {
+	Rows  []database.SessionStat `json:"rows"`
+	Total int                    `json:"total"`
+}
+
+// sessionStats powers the dashboard's by-session table. With ?since_id=N it
+// returns only the sessions that logged an exchange after N (used to
+// live-patch the table without a full refetch); otherwise it returns a
+// limit/offset page ordered by recency.
 func (h *handlers) sessionStats(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.db.GetSessionStats(r.Context())
+	if v := r.URL.Query().Get("since_id"); v != "" {
+		sinceID, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "since_id must be an integer")
+			return
+		}
+		rows, err := h.db.GetSessionStatsSince(r.Context(), sinceID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if rows == nil {
+			rows = []database.SessionStat{}
+		}
+		writeJSON(w, http.StatusOK, sessionStatsResponse{Rows: rows})
+		return
+	}
+
+	limit := 50
+	offset := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "limit and offset must be integers")
+			return
+		}
+		limit = n
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "limit and offset must be integers")
+			return
+		}
+		offset = n
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	rows, err := h.db.GetSessionStats(r.Context(), limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -186,7 +238,12 @@ func (h *handlers) sessionStats(w http.ResponseWriter, r *http.Request) {
 	if rows == nil {
 		rows = []database.SessionStat{}
 	}
-	writeJSON(w, http.StatusOK, rows)
+	total, err := h.db.CountSessionStats(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionStatsResponse{Rows: rows, Total: total})
 }
 
 // dailyCosts powers the dashboard's spending heatmap. ?days= defaults to 60

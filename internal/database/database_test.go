@@ -376,7 +376,7 @@ func TestGetSessionStats(t *testing.T) {
 	_ = db.SaveExchange(ctx, Exchange{SessionID: "old", SessionName: strPtr("Old"), Path: "/p", Timestamp: now, RawRequest: "{}", RawResponse: "{}"})
 	_ = db.SaveExchange(ctx, Exchange{SessionID: "new", SessionName: strPtr("New"), Path: "/p", Timestamp: now + 10, RawRequest: "{}", RawResponse: "{}"})
 
-	stats, err := db.GetSessionStats(ctx)
+	stats, err := db.GetSessionStats(ctx, 50, 0)
 	if err != nil {
 		t.Fatalf("GetSessionStats: %v", err)
 	}
@@ -385,6 +385,61 @@ func TestGetSessionStats(t *testing.T) {
 	}
 	if stats[0].SessionID != "new" {
 		t.Errorf("expected most-recently-active session first, got %+v", stats[0])
+	}
+
+	page, err := db.GetSessionStats(ctx, 1, 0)
+	if err != nil {
+		t.Fatalf("GetSessionStats(limit=1): %v", err)
+	}
+	if len(page) != 1 || page[0].SessionID != "new" {
+		t.Fatalf("got %+v, want single most-recent session", page)
+	}
+	page, err = db.GetSessionStats(ctx, 1, 1)
+	if err != nil {
+		t.Fatalf("GetSessionStats(offset=1): %v", err)
+	}
+	if len(page) != 1 || page[0].SessionID != "old" {
+		t.Fatalf("got %+v, want single second-most-recent session", page)
+	}
+
+	total, err := db.CountSessionStats(ctx)
+	if err != nil {
+		t.Fatalf("CountSessionStats: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("CountSessionStats = %d, want 2", total)
+	}
+}
+
+func TestGetSessionStatsSince(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := float64(time.Now().Unix())
+
+	_ = db.SaveExchange(ctx, Exchange{SessionID: "a", Path: "/p", Timestamp: now, RawRequest: "{}", RawResponse: "{}"})
+	firstPage, err := db.GetExchanges(ctx, "", 1, 0)
+	if err != nil || len(firstPage) != 1 {
+		t.Fatalf("GetExchanges: rows=%+v err=%v", firstPage, err)
+	}
+	sinceID := firstPage[0].ID
+
+	// Two different sessions each write a new exchange after sinceID,
+	// simulating two Claude Code terminals active within the same poll
+	// window — both must appear in the delta, not just the one owning the
+	// highest exchange id.
+	_ = db.SaveExchange(ctx, Exchange{SessionID: "b", Path: "/p", Timestamp: now + 1, RawRequest: "{}", RawResponse: "{}"})
+	_ = db.SaveExchange(ctx, Exchange{SessionID: "c", Path: "/p", Timestamp: now + 2, RawRequest: "{}", RawResponse: "{}"})
+
+	delta, err := db.GetSessionStatsSince(ctx, sinceID)
+	if err != nil {
+		t.Fatalf("GetSessionStatsSince: %v", err)
+	}
+	if len(delta) != 2 {
+		t.Fatalf("got %d delta rows, want 2 (b and c, not a): %+v", len(delta), delta)
+	}
+	seen := map[string]bool{delta[0].SessionID: true, delta[1].SessionID: true}
+	if !seen["b"] || !seen["c"] {
+		t.Errorf("expected sessions b and c in delta, got %+v", delta)
 	}
 }
 
