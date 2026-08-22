@@ -85,11 +85,11 @@ type ExchangeDetail struct {
 	RawResponse  *string         `json:"raw_response"`
 }
 
-// ExchangeSessionInput is a minimal exchange row used to cross-reference
-// input messages against the exchange they originated from.
+// ExchangeSessionInput is a minimal exchange row used to cross-reference the
+// last input message against the exchange it originated from.
 type ExchangeSessionInput struct {
-	ID            int64   `json:"id"`
-	InputMessages *string `json:"input_messages"`
+	ID               int64   `json:"id"`
+	LastInputMessage *string `json:"last_input_message"`
 }
 
 // Totals is an aggregate over a set of exchanges.
@@ -280,13 +280,15 @@ func (db *DB) GetExchangeDetail(ctx context.Context, id int64) (*ExchangeDetail,
 	return &e, nil
 }
 
-// GetExchangeSessionInputs returns the id and raw input_messages of every
-// other exchange in the same session as id, oldest first. input_messages is
-// returned untouched (never reparsed/re-marshaled) so a client can hash it
-// the same way it hashes id's own input messages and compare for equality.
+// GetExchangeSessionInputs returns the id and last input message of every
+// other exchange in the same session as id, oldest first. Only the last
+// message of each row is returned — the sole part a client uses to check
+// whether a message in id's own input_messages originated from that
+// exchange — untouched (never reparsed/re-marshaled) so hashing it matches
+// hashing id's own last message.
 func (db *DB) GetExchangeSessionInputs(ctx context.Context, id int64) ([]ExchangeSessionInput, error) {
 	rows, err := db.sql.QueryContext(ctx,
-		`SELECT id, input_messages FROM exchanges
+		`SELECT id, json_extract(input_messages, '$[#-1]') FROM exchanges
 		 WHERE session_id = (SELECT session_id FROM exchanges WHERE id = ?) AND id != ?
 		 ORDER BY timestamp`, id, id,
 	)
@@ -298,7 +300,7 @@ func (db *DB) GetExchangeSessionInputs(ctx context.Context, id int64) ([]Exchang
 	out := []ExchangeSessionInput{}
 	for rows.Next() {
 		var e ExchangeSessionInput
-		if err := rows.Scan(&e.ID, &e.InputMessages); err != nil {
+		if err := rows.Scan(&e.ID, &e.LastInputMessage); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -388,10 +390,7 @@ func (db *DB) CountSessionStats(ctx context.Context) (int, error) {
 
 // GetSessionStatsSince returns per-session aggregates for exactly the
 // sessions that logged an exchange with id > sinceID, most recently active
-// first. Deriving the changed-session set from exchange ids (rather than a
-// single "latest exchange id" watermark) keeps every session that wrote
-// concurrently within one poll window, not just whichever session happened
-// to own the highest id.
+// first.
 func (db *DB) GetSessionStatsSince(ctx context.Context, sinceID int64) ([]SessionStat, error) {
 	rows, err := db.sql.QueryContext(ctx,
 		`SELECT `+sessionStatsColumns+`

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,25 @@ import (
 	"github.com/lfsc09/claude-lens/internal/pricing"
 	"github.com/lfsc09/claude-lens/internal/status"
 )
+
+// parsePageParams reads limit/offset query params, defaulting limit to
+// defaultLimit and clamping it to [1, maxLimit]; offset clamps to >= 0.
+func parsePageParams(r *http.Request, defaultLimit, maxLimit int) (limit, offset int, err error) {
+	limit, offset = defaultLimit, 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if limit, err = strconv.Atoi(v); err != nil {
+			return 0, 0, errors.New("limit and offset must be integers")
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if offset, err = strconv.Atoi(v); err != nil {
+			return 0, 0, errors.New("limit and offset must be integers")
+		}
+	}
+	limit = min(max(limit, 1), maxLimit)
+	offset = max(offset, 0)
+	return limit, offset, nil
+}
 
 // handlers holds the dependencies shared by every admin route.
 type handlers struct {
@@ -73,26 +93,10 @@ const claudeSessionActiveWindow = 30 * time.Minute
 func (h *handlers) listExchanges(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 
-	limit := 100
-	offset := 0
-	if v := r.URL.Query().Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "limit and offset must be integers")
-			return
-		}
-		limit = n
-	}
-	if v := r.URL.Query().Get("offset"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "limit and offset must be integers")
-			return
-		}
-		offset = n
-	}
-	if limit > 1000 {
-		limit = 1000
+	limit, offset, err := parsePageParams(r, 100, 1000)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	rows, err := h.db.GetExchanges(r.Context(), q, limit, offset)
@@ -193,8 +197,8 @@ func (h *handlers) totals(w http.ResponseWriter, r *http.Request) {
 }
 
 // sessionStatsResponse wraps a page of per-session aggregates with the total
-// distinct-session count, mirroring exchangesResponse's shape. Total is
-// omitted for the since_id delta mode, which doesn't need it.
+// distinct-session count, mirroring exchangesResponse's shape. Total reflects
+// the same underlying value in both limit/offset and since_id delta mode.
 type sessionStatsResponse struct {
 	Rows  []database.SessionStat `json:"rows"`
 	Total int                    `json:"total"`
@@ -219,30 +223,19 @@ func (h *handlers) sessionStats(w http.ResponseWriter, r *http.Request) {
 		if rows == nil {
 			rows = []database.SessionStat{}
 		}
-		writeJSON(w, http.StatusOK, sessionStatsResponse{Rows: rows})
+		total, err := h.db.CountSessionStats(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, sessionStatsResponse{Rows: rows, Total: total})
 		return
 	}
 
-	limit := 50
-	offset := 0
-	if v := r.URL.Query().Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "limit and offset must be integers")
-			return
-		}
-		limit = n
-	}
-	if v := r.URL.Query().Get("offset"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "limit and offset must be integers")
-			return
-		}
-		offset = n
-	}
-	if limit > 1000 {
-		limit = 1000
+	limit, offset, err := parsePageParams(r, 50, 1000)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	rows, err := h.db.GetSessionStats(r.Context(), limit, offset)

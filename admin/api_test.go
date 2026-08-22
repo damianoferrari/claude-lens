@@ -170,6 +170,27 @@ func TestExchangesList_LimitClampedTo1000(t *testing.T) {
 	// out-of-range limit doesn't error out.
 }
 
+func TestExchangesList_NegativeLimitClamped(t *testing.T) {
+	s, db := newTestServer(t)
+	ctx := context.Background()
+	for i, sess := range []string{"a", "b", "c"} {
+		if err := db.SaveExchange(ctx, database.Exchange{
+			SessionID: sess, Path: "/p", Timestamp: float64(1000 + i), RawRequest: "{}", RawResponse: "{}",
+		}); err != nil {
+			t.Fatalf("SaveExchange: %v", err)
+		}
+	}
+
+	rec := doJSON(t, s, http.MethodGet, "/api/exchanges?limit=-1", nil)
+	var resp exchangesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Rows) != 1 {
+		t.Errorf("negative limit: got %d rows, want 1 (clamped, not unbounded)", len(resp.Rows))
+	}
+}
+
 func TestExchangeDetail_NotFound(t *testing.T) {
 	s, _ := newTestServer(t)
 	rec := doJSON(t, s, http.MethodGet, "/api/exchanges/999", nil)
@@ -312,6 +333,25 @@ func TestSessionStatsPagination(t *testing.T) {
 	}
 }
 
+func TestSessionStatsPagination_NegativeLimitClamped(t *testing.T) {
+	s, db := newTestServer(t)
+	ctx := context.Background()
+	for i, id := range []string{"a", "b", "c"} {
+		if err := db.SaveExchange(ctx, database.Exchange{SessionID: id, Path: "/p", Timestamp: float64(1000 + i), RawRequest: "{}", RawResponse: "{}"}); err != nil {
+			t.Fatalf("SaveExchange: %v", err)
+		}
+	}
+
+	rec := doJSON(t, s, http.MethodGet, "/api/session-stats?limit=-1", nil)
+	var resp sessionStatsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Rows) != 1 {
+		t.Errorf("negative limit: got %d rows, want 1 (clamped, not unbounded)", len(resp.Rows))
+	}
+}
+
 func TestSessionStatsSince(t *testing.T) {
 	s, db := newTestServer(t)
 	ctx := context.Background()
@@ -333,6 +373,9 @@ func TestSessionStatsSince(t *testing.T) {
 	}
 	if len(resp.Rows) != 1 || resp.Rows[0].SessionID != "b" {
 		t.Errorf("expected only session b in delta, got %+v", resp.Rows)
+	}
+	if resp.Total != 2 {
+		t.Errorf("Total = %d, want 2 (distinct-session count, not just the delta)", resp.Total)
 	}
 }
 

@@ -89,7 +89,8 @@ import { debounce, esc, estimateBytes, fmtBytes, fmtCost, fmtInt, fmtTime, hashS
   /**
    * Hashes the last input message of every other exchange in the same
    * session, so a message in this exchange's own input_messages can be
-   * recognized as another exchange's own prompt.
+   * recognized as another exchange's own prompt. On a hash collision between
+   * siblings, the oldest exchange (the true origin) wins.
    * @param {string} exchangeId - Id of the exchange whose session siblings to index.
    * @returns {Promise<Map<string, number>>} Map of message hash to owning exchange id.
    */
@@ -97,12 +98,14 @@ import { debounce, esc, estimateBytes, fmtBytes, fmtCost, fmtInt, fmtTime, hashS
     const res = await fetch(`/api/exchanges/${exchangeId}/session-inputs`);
     if (!res.ok) return new Map();
     const rows = await res.json();
-    const index = new Map();
-    await Promise.all(rows.map(async (row) => {
-      const lastMsg = JSON.parse(row.input_messages || '[]').at(-1);
-      if (!lastMsg) return;
-      index.set(await hashStr(valueToStr(stripCacheControl(lastMsg), 0)), row.id);
+    const hashes = await Promise.all(rows.map(async (row) => {
+      if (!row.last_input_message) return null;
+      return hashStr(valueToStr(stripCacheControl(JSON.parse(row.last_input_message)), 0));
     }));
+    const index = new Map();
+    rows.forEach((row, i) => {
+      if (hashes[i] && !index.has(hashes[i])) index.set(hashes[i], row.id);
+    });
     return index;
   }
 

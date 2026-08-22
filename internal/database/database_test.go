@@ -175,6 +175,54 @@ func TestSaveAndGetExchange(t *testing.T) {
 	}
 }
 
+func TestGetExchangeSessionInputs(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := float64(time.Now().Unix())
+
+	if err := db.SaveExchange(ctx, Exchange{
+		SessionID: "sess-1", Path: "/p", Timestamp: now,
+		InputMessages: strPtr(`[{"role":"user","content":"first"}]`),
+		RawRequest:    "{}", RawResponse: "{}",
+	}); err != nil {
+		t.Fatalf("SaveExchange 1: %v", err)
+	}
+	if err := db.SaveExchange(ctx, Exchange{
+		SessionID: "sess-1", Path: "/p", Timestamp: now + 1,
+		InputMessages: strPtr(`[{"role":"user","content":"first"},{"role":"assistant","content":"reply"},{"role":"user","content":"second"}]`),
+		RawRequest:    "{}", RawResponse: "{}",
+	}); err != nil {
+		t.Fatalf("SaveExchange 2: %v", err)
+	}
+	if err := db.SaveExchange(ctx, Exchange{
+		SessionID: "sess-2", Path: "/p", Timestamp: now,
+		InputMessages: strPtr(`[{"role":"user","content":"other session"}]`),
+		RawRequest:    "{}", RawResponse: "{}",
+	}); err != nil {
+		t.Fatalf("SaveExchange other session: %v", err)
+	}
+
+	list, err := db.GetExchanges(ctx, `session = "sess-1"`, 10, 0)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("GetExchanges: rows=%+v err=%v", list, err)
+	}
+	first, second := list[1], list[0] // GetExchanges is newest first
+	if first.Timestamp > second.Timestamp {
+		first, second = second, first
+	}
+
+	rows, err := db.GetExchangeSessionInputs(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("GetExchangeSessionInputs: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != first.ID {
+		t.Fatalf("got %+v, want exactly the sibling exchange %d", rows, first.ID)
+	}
+	if rows[0].LastInputMessage == nil || *rows[0].LastInputMessage != `{"role":"user","content":"first"}` {
+		t.Errorf("LastInputMessage = %v, want only the sibling's last message, not its full input_messages array", rows[0].LastInputMessage)
+	}
+}
+
 func TestGetExchanges_SessionFilterAndPagination(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
