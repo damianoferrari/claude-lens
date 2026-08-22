@@ -85,6 +85,13 @@ type ExchangeDetail struct {
 	RawResponse  *string         `json:"raw_response"`
 }
 
+// ExchangeSessionInput is a minimal exchange row used to cross-reference
+// input messages against the exchange they originated from.
+type ExchangeSessionInput struct {
+	ID            int64   `json:"id"`
+	InputMessages *string `json:"input_messages"`
+}
+
 // Totals is an aggregate over a set of exchanges.
 type Totals struct {
 	Count                    int64    `json:"count"`
@@ -271,6 +278,32 @@ func (db *DB) GetExchangeDetail(ctx context.Context, id int64) (*ExchangeDetail,
 		e.MatchedPrice = json.RawMessage(matchedPrice.String)
 	}
 	return &e, nil
+}
+
+// GetExchangeSessionInputs returns the id and raw input_messages of every
+// other exchange in the same session as id, oldest first. input_messages is
+// returned untouched (never reparsed/re-marshaled) so a client can hash it
+// the same way it hashes id's own input messages and compare for equality.
+func (db *DB) GetExchangeSessionInputs(ctx context.Context, id int64) ([]ExchangeSessionInput, error) {
+	rows, err := db.sql.QueryContext(ctx,
+		`SELECT id, input_messages FROM exchanges
+		 WHERE session_id = (SELECT session_id FROM exchanges WHERE id = ?) AND id != ?
+		 ORDER BY timestamp`, id, id,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []ExchangeSessionInput{}
+	for rows.Next() {
+		var e ExchangeSessionInput
+		if err := rows.Scan(&e.ID, &e.InputMessages); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // GetTokenTotals returns aggregate token/cost counts, optionally scoped to a

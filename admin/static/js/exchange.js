@@ -6,6 +6,7 @@ import { debounce, esc, estimateBytes, fmtBytes, fmtCost, fmtInt, fmtTime, hashS
   const exchangeId = window.location.pathname.split('/').filter(Boolean).pop();
   const tabSize = 4;
   let derivedExchange = null;
+  let messageOwnerIndex = new Map();
 
   /**
    * Goes back to the previous page if the referrer is same-origin, otherwise
@@ -26,6 +27,28 @@ import { debounce, esc, estimateBytes, fmtBytes, fmtCost, fmtInt, fmtTime, hashS
   if (notFoundBackLink) notFoundBackLink.addEventListener('click', goBackToExchanges);
 
   /**
+   * Recursively strips `cache_control` breakpoints from a parsed message.
+   * Anthropic clients move this ephemeral marker onto whichever message is
+   * currently last in a request, so the same logical message hashes
+   * differently depending on whether it's the newest turn or buried in a
+   * later request's history — stripping it makes the hash a stable identity
+   * for "same message" regardless of where it appears.
+   * @param {*} value - Parsed JSON value (message, array, or scalar).
+   * @returns {*} A deep copy of value with every `cache_control` key removed.
+   */
+  function stripCacheControl(value) {
+    if (Array.isArray(value)) return value.map(stripCacheControl);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value)
+          .filter(([key]) => key !== 'cache_control')
+          .map(([key, val]) => [key, stripCacheControl(val)])
+      );
+    }
+    return value;
+  }
+
+  /**
    * Adds index/number/hash/content_text/content_bytes derived fields to each
    * input message, used by renderInputMessages and the message dialog.
    * @param {object[]} inputMessages - Raw input messages parsed from the exchange.
@@ -33,9 +56,12 @@ import { debounce, esc, estimateBytes, fmtBytes, fmtCost, fmtInt, fmtTime, hashS
    */
   async function deriveInputMessages(inputMessages) {
     await Promise.all(inputMessages.map(async (msg, index) => {
+      // Hash before stamping index/number: those are this array's own
+      // positions, not part of the message, and must not affect the hash
+      // used to match this message against another exchange's own prompt.
+      msg.hash = await hashStr(valueToStr(stripCacheControl(msg), 0));
       msg.index = index;
       msg.number = index + 1;
-      msg.hash = await hashStr(valueToStr(msg, 0));
       msg.content_text = valueToStr(msg?.content, tabSize);
       msg.content_bytes = estimateBytes(msg.content_text);
     }));
@@ -60,17 +86,42 @@ import { debounce, esc, estimateBytes, fmtBytes, fmtCost, fmtInt, fmtTime, hashS
     return exchange;
   }
 
-  function renderInputMessages(inputMessages) {
+  /**
+   * Hashes the last input message of every other exchange in the same
+   * session, so a message in this exchange's own input_messages can be
+   * recognized as another exchange's own prompt.
+   * @param {string} exchangeId - Id of the exchange whose session siblings to index.
+   * @returns {Promise<Map<string, number>>} Map of message hash to owning exchange id.
+   */
+  async function buildMessageOwnerIndex(exchangeId) {
+    const res = await fetch(`/api/exchanges/${exchangeId}/session-inputs`);
+    if (!res.ok) return new Map();
+    const rows = await res.json();
+    const index = new Map();
+    await Promise.all(rows.map(async (row) => {
+      const lastMsg = JSON.parse(row.input_messages || '[]').at(-1);
+      if (!lastMsg) return;
+      index.set(await hashStr(valueToStr(stripCacheControl(lastMsg), 0)), row.id);
+    }));
+    return index;
+  }
+
+  function renderInputMessages(inputMessages, messageOwnerIndex) {
     let html = '<ol class="relative border-s border-default flex flex-col gap-16" role="list" e-input-messages-content>';
 
     // Render from end to start
     for (let i = inputMessages.length - 1; i >= 0; i--) {
       const msg = inputMessages[i];
+      // The last message is this exchange's own prompt, not owned by anyone else.
+      const ownerId = i < inputMessages.length - 1 ? messageOwnerIndex.get(msg.hash) : undefined;
+      const hashMarkup = ownerId
+        ? `<a href="/exchanges/${ownerId}" class="font-mono text-xs text-gray-500 hover:text-emerald-500"><span class="underline mr-0.5">${msg.hash}</span>⧉</a>`
+        : `<span class="font-mono text-xs text-gray-500 hover:text-emerald-500">${msg.hash}</span>`;
       html += `
         <li class="ms-10 flex items-center overflow-x-hidden">
           <span class="absolute bg-white w-20 flex items-center justify-center text-xs text-gray-500 font-mono mt-1.5 -start-10 py-2">${msg.number}</span>
           <div class="flex flex-col gap-2 border-l-2 border-gray-200 rounded-lg px-2">
-            <span class="font-mono text-xs text-gray-500 hover:text-emerald-500">${msg.hash}</span>
+            ${hashMarkup}
             <div class="flex items-center gap-2">
               <span class="bg-gray-50 border border-gray-200 text-heading text-xs font-medium px-1.5 py-0.5 rounded w-fit">${msg.role || '—'}</span>
               <span class="bg-gray-50 border border-gray-200 text-heading text-[.7rem] font-medium px-1.5 py-0.5 rounded w-fit">${fmtBytes(msg.content_bytes)}</span>
@@ -227,7 +278,7 @@ import { debounce, esc, estimateBytes, fmtBytes, fmtCost, fmtInt, fmtTime, hashS
             <div class="bg-white border border-gray-200 p-4">
               <input type="search" id="input-messages-search" placeholder="Search…" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500">
             </div>
-            <div class="bg-white rounded-b-lg border border-gray-200 py-8 px-10 max-h-[750px] overflow-y-auto">${renderInputMessages(exchange.input_messages)}</div>
+            <div class="bg-white rounded-b-lg border border-gray-200 py-8 px-10 max-h-[750px] overflow-y-auto">${renderInputMessages(exchange.input_messages, messageOwnerIndex)}</div>
           </div>
         </section>
       `;
@@ -288,12 +339,16 @@ import { debounce, esc, estimateBytes, fmtBytes, fmtCost, fmtInt, fmtTime, hashS
       return;
     }
 
-    const res = await fetch(`/api/exchanges/${exchangeId}`);
+    const [res, ownerIndex] = await Promise.all([
+      fetch(`/api/exchanges/${exchangeId}`),
+      buildMessageOwnerIndex(exchangeId),
+    ]);
     if (!res.ok) {
       showNotFound();
       return;
     }
 
+    messageOwnerIndex = ownerIndex;
     derivedExchange = await deriveExchange(await res.json());
 
     render(derivedExchange);

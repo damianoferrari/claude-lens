@@ -139,6 +139,21 @@ func (h *handlers) exchangeDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, row)
 }
 
+func (h *handlers) exchangeSessionInputs(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	rows, err := h.db.GetExchangeSessionInputs(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
 func (h *handlers) deleteExchanges(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("session_id")
 	alsoDeleteClaudeSession := r.URL.Query().Get("also_delete_claude_session") == "true"
