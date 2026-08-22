@@ -33,8 +33,11 @@
       <div>
         <h1 class="text-xl font-semibold">Cost limiters</h1>
         <p class="max-w-2xl text-sm text-gray-500 mt-1">
-          Blocks proxied requests once a limiter's spend reaches its budget, until the next refresh. <b>Since cost is
-          only known after a response comes back, the request that pushes spend over the limit still goes through</b> —
+          Blocks proxied requests once a limiter's spend reaches its budget, until the next refresh.
+        </p>
+        <p class="max-w-2xl text-sm text-gray-500 mt-2 border-2 border-gray-300 border-dashed px-3 py-2 rounded-md">
+          <b>Since cost is
+          only known after a response comes back, the request that pushes spend <u>over the limit</u> still goes through</b> —
           it's every request after it that gets blocked.
         </p>
       </div>
@@ -65,6 +68,37 @@
           </tr>
         </tbody>
       </table>
+    </section>
+
+    <!-- ── How limiters apply ──────────────────────────────────────────── -->
+    <section aria-label="How limiters apply" class="text-sm text-gray-600 p-5 mt-6 space-y-2 bg-white rounded-lg border border-gray-200">
+      <p class="font-medium uppercase tracking-wide text-xs text-gray-500">How limiters apply</p>
+      <p class="text-gray-500 text-xs">A request is blocked as soon as any limiter that applies to it is over budget:</p>
+      <ul class="list-inside list-disc text-gray-500 text-xs space-y-1">
+        <li><strong>Global</strong> limiters (blank scope) apply to every session; <strong>session-specific</strong> limiters only apply to the one session they identify. Both kinds can be in force for the same request at once — any one of them being over budget is enough to block.</li>
+      </ul>
+      <p class="text-gray-500 text-xs">Two independent switches decide whether a limiter is currently enforced — both must hold for it to count:</p>
+      <ul class="list-inside list-disc text-gray-500 text-xs space-y-1">
+        <li>The <strong>Status</strong> toggle is a manual on/off switch that stays exactly where you leave it.</li>
+        <li>The <strong>active period</strong> is a recurring hour-of-day window (server time, wraps past midnight when "From" is later than "To") — outside it, the limiter neither blocks requests nor accrues spend, even while switched on. "Always active" covers all 24 hours.</li>
+      </ul>
+      <p class="text-gray-500 text-xs">Refresh resets a limiter's spend back to zero and opens a new tracking window:</p>
+      <ul class="list-inside list-disc text-gray-500 text-xs space-y-1">
+        <li>By default it's a fixed interval counted from whenever the limiter last refreshed (or was created) — e.g. every 60 minutes on the dot from that moment, regardless of the wall clock.</li>
+        <li><strong>Aligned</strong> instead snaps to the next calendar boundary — top of the hour, midnight, Monday, or the 1st of the month — so every reset lands in sync with the clock rather than with creation time. Only offered for the handful of durations with an unambiguous boundary (60 minutes, 1 or 24 hours, 1 or 7 days, 1 month).</li>
+      </ul>
+    </section>
+
+    <!-- ── Editing limiters ───────────────────────────────────────────── -->
+    <section aria-label="Editing limiters" class="text-sm text-gray-600 p-5 mt-6 space-y-2 bg-white rounded-lg border border-gray-200">
+      <p class="font-medium uppercase tracking-wide text-xs text-gray-500 mt-2">Editing limiters</p>
+      <p class="text-gray-500 text-xs">
+        Saving an edit always resets current spend to $0 and restarts the refresh window from that moment.
+      </p>
+      <p class="text-gray-500 text-xs">
+        The <strong>Status</strong> toggle is the one exception: switching a limiter on or off is a separate action
+        that never touches its spend or refresh window.
+      </p>
     </section>
   </main>
 
