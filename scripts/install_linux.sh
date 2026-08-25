@@ -8,8 +8,8 @@ CONFIG_DIR="/etc/claude-lens"
 ENV_FILE="${CONFIG_DIR}/claude-lens.env"
 DOWNLOAD_URL="https://github.com/lfsc09/claude-lens/releases/latest/download/claude-lens-linux-amd64"
 CHECKSUM_URL="${DOWNLOAD_URL}.sha256"
-SERVICE_USER="nobody"
-SERVICE_GROUP="nogroup"
+SERVICE_USER="claude-lens"
+SERVICE_GROUP="claude-lens"
 
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -182,6 +182,18 @@ fi
 mkdir -p "$INSTALL_DIR"
 mv "$tmp_bin" "${INSTALL_DIR}/${SERVICE_NAME}"
 chmod +x "${INSTALL_DIR}/${SERVICE_NAME}"
+
+if [ "$CLENS_AS_SERVICE" = "true" ]; then
+  nologin_shell="$(command -v nologin || echo /usr/sbin/nologin)"
+  if ! getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
+    echo "Creating system group ${SERVICE_GROUP}..."
+    groupadd --system "$SERVICE_GROUP"
+  fi
+  if ! getent passwd "$SERVICE_USER" >/dev/null 2>&1; then
+    echo "Creating system user ${SERVICE_USER}..."
+    useradd --system --no-create-home --shell "$nologin_shell" --gid "$SERVICE_GROUP" "$SERVICE_USER"
+  fi
+fi
 
 echo "Preparing data/log directories..."
 mkdir -p "$CLENS_DATA_DIR" "$CLENS_LOG_DIR" "$CONFIG_DIR"
