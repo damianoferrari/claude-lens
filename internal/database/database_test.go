@@ -459,6 +459,47 @@ func TestGetSessionStats(t *testing.T) {
 	}
 }
 
+// TestGetSessionStats_ModelAndCacheCosts asserts the most-used-model ranking
+// (by exchange count, ties broken alphabetically) and that cache creation/
+// read costs are now summed alongside input/output costs.
+func TestGetSessionStats_ModelAndCacheCosts(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := float64(time.Now().Unix())
+
+	rows := []Exchange{
+		{SessionID: "s", Path: "/p", Timestamp: now, RawRequest: "{}", RawResponse: "{}",
+			Model: strPtr("claude-opus"), CacheCreationCost: floatPtr(0.01), CacheReadCost: floatPtr(0.02)},
+		{SessionID: "s", Path: "/p", Timestamp: now + 1, RawRequest: "{}", RawResponse: "{}",
+			Model: strPtr("claude-sonnet"), CacheCreationCost: floatPtr(0.03)},
+		{SessionID: "s", Path: "/p", Timestamp: now + 2, RawRequest: "{}", RawResponse: "{}",
+			Model: strPtr("claude-sonnet"), CacheReadCost: floatPtr(0.04)},
+	}
+	for _, r := range rows {
+		if err := db.SaveExchange(ctx, r); err != nil {
+			t.Fatalf("SaveExchange: %v", err)
+		}
+	}
+
+	stats, err := db.GetSessionStats(ctx, 50, 0)
+	if err != nil {
+		t.Fatalf("GetSessionStats: %v", err)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("got %d session stats, want 1", len(stats))
+	}
+	s := stats[0]
+	if s.Model == nil || *s.Model != "claude-sonnet" {
+		t.Errorf("Model = %v, want claude-sonnet (used in 2 of 3 exchanges)", deref(s.Model))
+	}
+	if s.TotalCacheCreationCost == nil || round4(*s.TotalCacheCreationCost) != round4(0.04) {
+		t.Errorf("TotalCacheCreationCost = %v, want ~0.04", s.TotalCacheCreationCost)
+	}
+	if s.TotalCacheReadCost == nil || round4(*s.TotalCacheReadCost) != round4(0.06) {
+		t.Errorf("TotalCacheReadCost = %v, want ~0.06", s.TotalCacheReadCost)
+	}
+}
+
 func TestGetSessionStatsSince(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

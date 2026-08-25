@@ -118,7 +118,13 @@ type SessionStat struct {
 	TotalCost                float64  `json:"total_cost"`
 	TotalInputCost           *float64 `json:"total_input_cost"`
 	TotalOutputCost          *float64 `json:"total_output_cost"`
-	LastUpdated              float64  `json:"last_updated"`
+	TotalCacheCreationCost   *float64 `json:"total_cache_creation_cost"`
+	TotalCacheReadCost       *float64 `json:"total_cache_read_cost"`
+	// Model is the model used in the most exchanges within the session
+	// (ties broken alphabetically), or nil if no exchange in the session
+	// has a recorded model.
+	Model       *string `json:"model"`
+	LastUpdated float64 `json:"last_updated"`
 }
 
 // DailyCost is a daily cost total, local-time bucketed.
@@ -356,21 +362,40 @@ func (db *DB) GetTokenTotals(ctx context.Context, sessionID string, since *float
 // sessionStatsColumns is the column list shared by GetSessionStats and
 // GetSessionStatsSince — both aggregate the same shape, just scoped
 // differently.
-const sessionStatsColumns = `session_id, MAX(session_name),
+const sessionStatsColumns = `e.session_id, MAX(e.session_name),
 		        COUNT(*),
-		        COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
-		        COALESCE(SUM(cache_creation_tokens), 0), COALESCE(SUM(cache_read_tokens), 0),
-		        COALESCE(SUM(cost), 0), SUM(input_cost), SUM(output_cost),
-		        MAX(timestamp)`
+		        COALESCE(SUM(e.input_tokens), 0), COALESCE(SUM(e.output_tokens), 0),
+		        COALESCE(SUM(e.cache_creation_tokens), 0), COALESCE(SUM(e.cache_read_tokens), 0),
+		        COALESCE(SUM(e.cost), 0), SUM(e.input_cost), SUM(e.output_cost),
+		        SUM(e.cache_creation_cost), SUM(e.cache_read_cost),
+		        MAX(e.timestamp), MAX(tm.model)`
+
+// topModelsCTE ranks each session's models by exchange count (ties broken
+// alphabetically for determinism) and keeps only the winner, so it can be
+// left-joined onto the per-session aggregate to surface the dominant model
+// without changing the GROUP BY session_id shape below.
+const topModelsCTE = `WITH top_models AS (
+		    SELECT session_id, model
+		    FROM (
+		        SELECT session_id, model,
+		               ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY COUNT(*) DESC, model ASC) AS rn
+		        FROM exchanges
+		        WHERE model IS NOT NULL
+		        GROUP BY session_id, model
+		    )
+		    WHERE rn = 1
+		)`
 
 // GetSessionStats returns a page of per-session aggregates, most recently
 // active first.
 func (db *DB) GetSessionStats(ctx context.Context, limit, offset int) ([]SessionStat, error) {
 	rows, err := db.sql.QueryContext(ctx,
-		`SELECT `+sessionStatsColumns+`
-		 FROM exchanges
-		 GROUP BY session_id
-		 ORDER BY MAX(timestamp) DESC
+		topModelsCTE+`
+		 SELECT `+sessionStatsColumns+`
+		 FROM exchanges e
+		 LEFT JOIN top_models tm ON tm.session_id = e.session_id
+		 GROUP BY e.session_id
+		 ORDER BY MAX(e.timestamp) DESC
 		 LIMIT ? OFFSET ?`,
 		limit, offset,
 	)
@@ -393,11 +418,13 @@ func (db *DB) CountSessionStats(ctx context.Context) (int, error) {
 // first.
 func (db *DB) GetSessionStatsSince(ctx context.Context, sinceID int64) ([]SessionStat, error) {
 	rows, err := db.sql.QueryContext(ctx,
-		`SELECT `+sessionStatsColumns+`
-		 FROM exchanges
-		 WHERE session_id IN (SELECT DISTINCT session_id FROM exchanges WHERE id > ?)
-		 GROUP BY session_id
-		 ORDER BY MAX(timestamp) DESC`,
+		topModelsCTE+`
+		 SELECT `+sessionStatsColumns+`
+		 FROM exchanges e
+		 LEFT JOIN top_models tm ON tm.session_id = e.session_id
+		 WHERE e.session_id IN (SELECT DISTINCT session_id FROM exchanges WHERE id > ?)
+		 GROUP BY e.session_id
+		 ORDER BY MAX(e.timestamp) DESC`,
 		sinceID,
 	)
 	if err != nil {
@@ -413,11 +440,14 @@ func scanSessionStats(rows *sql.Rows) ([]SessionStat, error) {
 	out := make([]SessionStat, 0)
 	for rows.Next() {
 		var s SessionStat
-		var totalInputCost, totalOutputCost sql.NullFloat64
+		var totalInputCost, totalOutputCost, totalCacheCreationCost, totalCacheReadCost sql.NullFloat64
+		var model sql.NullString
 		if err := rows.Scan(&s.SessionID, &s.SessionName, &s.ExchangeCount,
 			&s.TotalInputTokens, &s.TotalOutputTokens,
 			&s.TotalCacheCreationTokens, &s.TotalCacheReadTokens,
-			&s.TotalCost, &totalInputCost, &totalOutputCost, &s.LastUpdated); err != nil {
+			&s.TotalCost, &totalInputCost, &totalOutputCost,
+			&totalCacheCreationCost, &totalCacheReadCost,
+			&s.LastUpdated, &model); err != nil {
 			return nil, err
 		}
 		if totalInputCost.Valid {
@@ -425,6 +455,15 @@ func scanSessionStats(rows *sql.Rows) ([]SessionStat, error) {
 		}
 		if totalOutputCost.Valid {
 			s.TotalOutputCost = &totalOutputCost.Float64
+		}
+		if totalCacheCreationCost.Valid {
+			s.TotalCacheCreationCost = &totalCacheCreationCost.Float64
+		}
+		if totalCacheReadCost.Valid {
+			s.TotalCacheReadCost = &totalCacheReadCost.Float64
+		}
+		if model.Valid {
+			s.Model = &model.String
 		}
 		out = append(out, s)
 	}
