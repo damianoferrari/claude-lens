@@ -13,21 +13,6 @@ export function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-export function randomId() {
-  return crypto.getRandomValues(new Uint32Array(1))[0].toString(16);
-}
-
-/**
- * @param {string} str - Input string to hash.
- * @returns {Promise<?string>} Hex-encoded SHA-256 digest, or null when str is falsy.
- */
-export async function hashStr(str) {
-  if (!str) return null;
-  const msgUint8 = txtEncoder.encode(str);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
-  return new Uint8Array(hashBuffer).reduce((str, byte) => str + byte.toString(16).padStart(2, '0'), '');
-}
-
 export function estimateBytes(str) {
   if (!str) return 0;
   return txtEncoder.encode(String(str)).length;
@@ -139,27 +124,6 @@ export function fmtBytes(bytes) {
 export function fmtSessionId(sessionId, maxLength = 15) {
   if (!sessionId) return '-';
   return sessionId.length > maxLength ? `${sessionId.slice(0, Math.floor(maxLength / 2))} … ${sessionId.slice(-Math.floor(maxLength / 2))}` : sessionId;
-}
-
-export function valueToStr(content, tabSize = 2) {
-  if (typeof content === 'object') {
-    return JSON.stringify(content, null, tabSize);
-  }
-  return String(content || '');
-}
-
-/**
- * @param {?string} jsonStr - JSON text to pretty-print.
- * @param {number} [tabSize=2] - Indentation width.
- * @returns {string} Pretty-printed JSON, or the original string if it's not valid JSON.
- */
-export function prettyJSON(jsonStr, tabSize = 2) {
-  if (jsonStr == null) return '';
-  try {
-    return JSON.stringify(JSON.parse(jsonStr), null, tabSize);
-  } catch {
-    return jsonStr;
-  }
 }
 
 /**

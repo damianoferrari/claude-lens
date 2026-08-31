@@ -85,13 +85,6 @@ type ExchangeDetail struct {
 	RawResponse  *string         `json:"raw_response"`
 }
 
-// ExchangeSessionInput is a minimal exchange row used to cross-reference the
-// last input message against the exchange it originated from.
-type ExchangeSessionInput struct {
-	ID               int64   `json:"id"`
-	LastInputMessage *string `json:"last_input_message"`
-}
-
 // Totals is an aggregate over a set of exchanges.
 type Totals struct {
 	Count                    int64    `json:"count"`
@@ -284,34 +277,6 @@ func (db *DB) GetExchangeDetail(ctx context.Context, id int64) (*ExchangeDetail,
 		e.MatchedPrice = json.RawMessage(matchedPrice.String)
 	}
 	return &e, nil
-}
-
-// GetExchangeSessionInputs returns the id and last input message of every
-// other exchange in the same session as id, oldest first. Only the last
-// message of each row is returned — the sole part a client uses to check
-// whether a message in id's own input_messages originated from that
-// exchange — untouched (never reparsed/re-marshaled) so hashing it matches
-// hashing id's own last message.
-func (db *DB) GetExchangeSessionInputs(ctx context.Context, id int64) ([]ExchangeSessionInput, error) {
-	rows, err := db.sql.QueryContext(ctx,
-		`SELECT id, json_extract(input_messages, '$[#-1]') FROM exchanges
-		 WHERE session_id = (SELECT session_id FROM exchanges WHERE id = ?) AND id != ?
-		 ORDER BY timestamp`, id, id,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []ExchangeSessionInput{}
-	for rows.Next() {
-		var e ExchangeSessionInput
-		if err := rows.Scan(&e.ID, &e.LastInputMessage); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
 }
 
 // GetTokenTotals returns aggregate token/cost counts, optionally scoped to a

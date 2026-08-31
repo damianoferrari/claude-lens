@@ -7,6 +7,7 @@
   <title id="page-title">Exchange – claude-lens Admin</title>
   <link rel="icon" href="/favicon.ico">
   <script src="https://cdn.tailwindcss.com"></script>
+  <script type="module" src="https://cdn.jsdelivr.net/npm/@andypf/json-viewer@2.8.0/dist/esm/index.min.js"></script>
 </head>
 
 <body class="min-h-screen text-gray-800 bg-gray-50">
@@ -45,18 +46,6 @@
 
   <!-- ── Tooltip ─────────────────────────────────────────────────────────── -->
   <div id="app-tooltip" role="tooltip" class="whitespace-pre-line fixed z-50 max-w-xs text-white text-xs leading-snug px-2.5 py-1.5 rounded-md bg-gray-600 shadow-lg pointer-events-none opacity-0 transition-opacity duration-150"></div>
-
-  <!-- ── Dialog ──────────────────────────────────────────────────────────── -->
-  <dialog id="message-dialog" class="w-11/12 p-6 border border-gray-300 rounded-lg">
-    <div class="flex flex-col gap-6">
-      <label for="message-dialog-search" class="sr-only">Search messages</label>
-      <input type="search" id="message-dialog-search" placeholder="Search…" class="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500">
-      <div id="message-dialog-content" class="overflow-y-auto whitespace-pre-wrap max-h-[600px] font-mono text-xs text-gray-700 px-2 py-4"></div>
-      <div class="flex justify-end w-full">
-        <button commandfor="message-dialog" command="close" class="text-white px-3 py-1.5 bg-emerald-600 rounded-md hover:bg-emerald-700">Close</button>
-      </div>
-    </div>
-  </dialog>
 
   <script type="module" src="/js/exchange.js"></script>
 </body>
