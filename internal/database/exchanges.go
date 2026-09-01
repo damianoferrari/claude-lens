@@ -203,7 +203,7 @@ func (db *DB) GetExchanges(ctx context.Context, filterQuery string, limit, offse
 		query += "WHERE " + where + " "
 		args = append(args, whereArgs...)
 	}
-	query += "ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+	query += "ORDER BY id DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 
 	rows, err := db.sql.QueryContext(ctx, query, args...)

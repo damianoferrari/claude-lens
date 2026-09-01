@@ -244,17 +244,31 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
   }
 
   /**
-   * Buckets a daily cost into one of 5 heatmap levels using thresholds
-   * relative to the max cost across the visible range.
+   * Linear-interpolation percentile over an ascending-sorted array.
+   * @param {number[]} sorted - Values sorted ascending.
+   * @param {number} p - Percentile in [0, 1].
+   * @returns {number} Interpolated value, or 0 for an empty array.
+   */
+  function percentile(sorted, p) {
+    if (!sorted.length) return 0;
+    const idx = (sorted.length - 1) * p;
+    const lo = Math.floor(idx);
+    const hi = Math.ceil(idx);
+    if (lo === hi) return sorted[lo];
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+  }
+
+  /**
+   * Buckets a daily cost into one of 5 heatmap levels using percentile
+   * thresholds computed from the visible range's nonzero daily costs.
    * @param {number} cost - This day's cost.
-   * @param {number} maxCost - Maximum daily cost across the visible range.
-   * @param {number} lowThreshold - Upper bound of level 1.
-   * @param {number} midThreshold - Upper bound of level 2.
-   * @param {number} highThreshold - Upper bound of level 3.
+   * @param {number} lowThreshold - 25th-percentile upper bound of level 1.
+   * @param {number} midThreshold - 50th-percentile upper bound of level 2.
+   * @param {number} highThreshold - 75th-percentile upper bound of level 3.
    * @returns {number} Heatmap level from 0 (no activity) to 4 (highest).
    */
-  function getLevel(cost, maxCost, lowThreshold, midThreshold, highThreshold) {
-    if (!cost || cost === 0 || maxCost === 0) return 0;
+  function getLevel(cost, lowThreshold, midThreshold, highThreshold) {
+    if (!cost || cost === 0) return 0;
     if (cost < lowThreshold) return 1;
     if (cost < midThreshold) return 2;
     if (cost < highThreshold) return 3;
@@ -264,22 +278,22 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
   /**
    * Adaptive precision up to 2 decimals, then 0 decimals for larger values.
    * @param {number} cost - Cost to format.
-   * @returns {string} Formatted cost (e.g. "~$0.00" for sub-cent, "" for zero).
+   * @returns {string} Formatted cost (e.g. "<$0.01" for sub-cent, "" for zero).
    */
   function fmtCell(cost) {
     if (!cost || cost === 0) return '';
-    if (cost < 0.01) return `~$${cost.toFixed(2)}`;
+    if (cost < 0.01) return `<$0.01`;
     if (cost < 10) return `$${cost.toFixed(2)}`;
     if (cost < 100) return `$${cost.toFixed(1)}`;
-    if (cost > 999) return `(╯°□°)╯`;
-    return `$${cost.toFixed(0)}`;
+    if (cost < 1000) return `$${cost.toFixed(0)}`;
+    return `(╯°□°)╯`;
   }
 
   function fmtThreshold(v) {
-    if (v < 0.0001) return `$${v.toFixed(6)}`;
-    if (v < 0.01) return `$${v.toFixed(4)}`;
-    if (v < 1) return `$${v.toFixed(3)}`;
-    return `$${v.toFixed(2)}`;
+    if (v < 0.01) return `$<0.01`;
+    if (v < 10) return `$${v.toFixed(2)}`;
+    if (v < 100) return `$${v.toFixed(1)}`;
+    return `$${v.toFixed(0)}`;
   }
 
   function renderHeatmap() {
@@ -288,15 +302,19 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
 
     const costByDay = {};
     let maxCost = 0;
+    const nonZeroCosts = [];
     dailyCosts.forEach((d) => {
       costByDay[d.day] = d.daily_cost;
       if (d.daily_cost > maxCost) maxCost = d.daily_cost;
+      if (d.daily_cost > 0) nonZeroCosts.push(d.daily_cost);
     });
+    const sortedCosts = nonZeroCosts.toSorted((a, b) => a - b);
 
-    // Relative thresholds based on max daily cost
-    const lowThreshold = maxCost * 0.25;
-    const midThreshold = maxCost * 0.5;
-    const highThreshold = maxCost * 0.75;
+    // Quantile thresholds based on the spread of nonzero daily costs, so a
+    // single outlier day doesn't compress every other day into level 1.
+    const lowThreshold = percentile(sortedCosts, 0.25);
+    const midThreshold = percentile(sortedCosts, 0.5);
+    const highThreshold = percentile(sortedCosts, 0.75);
 
     const LEVELS = [
       { bg: 'bg-gray-100 border border-gray-200', text: 'text-gray-300' },
@@ -353,7 +371,7 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
 
         if (isFuture) return '<div class="w-16 h-7 rounded-sm"></div>';
 
-        const level = getLevel(cost, maxCost, lowThreshold, midThreshold, highThreshold);
+        const level = getLevel(cost, lowThreshold, midThreshold, highThreshold);
         const clr = LEVELS[level];
         const txt = fmtCell(cost);
         const tip = `<div class="flex gap-2"><b>${key}:</b><span>${cost > 0 ? `$${cost.toFixed(6)}` : 'no activity'}</span></div>`;
@@ -375,13 +393,36 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
     // Populate dynamic legend with actual thresholds
     const legend = document.getElementById('heatmap-legend');
     if (legend) {
-      legend.innerHTML = maxCost === 0
-        ? '<span class="text-gray-400">No spending data yet.</span>'
-        : `<div class="flex items-center gap-1.5"><div class="w-3 h-3 rounded-sm bg-gray-100 border border-gray-200 flex-shrink-0"></div><span>$0.00</span></div>
-          <div class="flex items-center gap-1.5"><div class="w-3 h-3 rounded-sm bg-emerald-100 flex-shrink-0"></div><span>&lt;${fmtThreshold(lowThreshold)}</span></div>
-          <div class="flex items-center gap-1.5"><div class="w-3 h-3 rounded-sm bg-emerald-300 flex-shrink-0"></div><span>&lt;${fmtThreshold(midThreshold)}</span></div>
-          <div class="flex items-center gap-1.5"><div class="w-3 h-3 rounded-sm bg-emerald-500 flex-shrink-0"></div><span>&lt;${fmtThreshold(highThreshold)}</span></div>
-          <div class="flex items-center gap-1.5"><div class="w-3 h-3 rounded-sm bg-emerald-700 flex-shrink-0"></div><span>&ge;${fmtThreshold(highThreshold)}</span></div>`;
+      if (maxCost === 0) {
+        legend.innerHTML = '<span class="text-gray-400">No spending data yet.</span>';
+      } else {
+        const entries = [
+          { bg: LEVELS[0].bg, label: '$0.00' },
+          { bg: LEVELS[1].bg, label: `&lt;${fmtThreshold(lowThreshold)}` },
+          { bg: LEVELS[2].bg, label: `&lt;${fmtThreshold(midThreshold)}` },
+          { bg: LEVELS[3].bg, label: `&lt;${fmtThreshold(highThreshold)}` },
+          { bg: LEVELS[4].bg, label: `&ge;${fmtThreshold(highThreshold)}` },
+        ];
+
+        // Collapse consecutive levels whose formatted threshold is identical
+        // (e.g. several sub-cent thresholds all display as "<$0.01") into a
+        // single legend row with stacked swatches instead of repeating the
+        // same label.
+        const groups = [];
+        entries.forEach((entry) => {
+          const lastGroup = groups[groups.length - 1];
+          if (lastGroup && lastGroup.label === entry.label) {
+            lastGroup.swatches.push(entry.bg);
+          } else {
+            groups.push({ label: entry.label, swatches: [entry.bg] });
+          }
+        });
+
+        legend.innerHTML = groups.map((g) => `<div class="flex items-center gap-1.5">
+          <div class="flex gap-0.5">${g.swatches.map((bg) => `<div class="w-3 h-3 rounded-sm ${bg} flex-shrink-0"></div>`).join('')}</div>
+          <span>${g.label}</span>
+          </div>`).join('');
+      }
     }
   }
 

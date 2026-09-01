@@ -531,10 +531,13 @@ func (h *handlers) createLimiter(w http.ResponseWriter, r *http.Request) {
 }
 
 // updateLimiter replaces a limiter's rule fields. Per the product rule,
-// any full edit resets progress: current_cost goes back to 0 and
-// next_refresh_at is recomputed from now, rather than trying to carry a
-// partial window across a changed rule. is_active is untouched — that's
-// setLimiterActive's job.
+// progress only resets when the edit actually changes the refresh
+// schedule (refresh_value, refresh_unit, or refresh_aligned): current_cost
+// goes back to 0 and next_refresh_at is recomputed from now, rather than
+// trying to carry a partial window across a changed schedule. Other fields
+// (limit_amount, active hours, session_id) leave progress untouched, so
+// e.g. raising limit_amount doesn't cost the user their current_cost.
+// is_active is untouched too — that's setLimiterActive's job.
 func (h *handlers) updateLimiter(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -567,17 +570,23 @@ func (h *handlers) updateLimiter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scheduleChanged := *req.RefreshValue != existing.RefreshValue ||
+		req.RefreshUnit != existing.RefreshUnit ||
+		req.RefreshAligned != existing.RefreshAligned
+
 	now := time.Now()
 	existing.SessionID = sessionID
 	existing.LimitAmount = *req.LimitAmount
-	existing.CurrentCost = 0
 	existing.RefreshValue = *req.RefreshValue
 	existing.RefreshUnit = req.RefreshUnit
 	existing.RefreshAligned = req.RefreshAligned
-	existing.NextRefreshAt = float64(database.ComputeNextRefresh(now, req.RefreshUnit, *req.RefreshValue, req.RefreshAligned).Unix())
 	existing.ActiveStartHour = req.ActiveStartHour
 	existing.ActiveEndHour = req.ActiveEndHour
 	existing.UpdatedAt = float64(now.Unix())
+	if scheduleChanged {
+		existing.CurrentCost = 0
+		existing.NextRefreshAt = float64(database.ComputeNextRefresh(now, req.RefreshUnit, *req.RefreshValue, req.RefreshAligned).Unix())
+	}
 
 	if err := h.db.UpdateLimiter(r.Context(), *existing); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

@@ -45,7 +45,7 @@ export function fmtInt(n) {
 
 export function fmtCost(c) {
   if (c == null) return '—';
-  return `$${c < 0.01 && c > 0 ? c.toFixed(4) : c.toFixed(2)}`;
+  return c < 0.01 ? '<$0.01' : `$${c.toFixed(2)}`;
 }
 
 /**
@@ -142,18 +142,18 @@ export function addCost(a, b) {
 export function costTooltip(row) {
   const parts = [];
   if (row.input_cost != null) parts.push(`<div class="flex justify-between"><b>Input:</b><span>${fmtCost(row.input_cost)}</span></div>`);
-  if (row.output_cost != null) parts.push(`<div class="flex justify-between"><b>Output:</b><span>${fmtCost(row.output_cost)}</span></div>`);
   if (row.cache_creation_cost != null) parts.push(`<div class="flex justify-between"><b>Cache create:</b><span>${fmtCost(row.cache_creation_cost)}</span></div>`);
   if (row.cache_read_cost != null) parts.push(`<div class="flex justify-between"><b>Cache read:</b><span>${fmtCost(row.cache_read_cost)}</span></div>`);
+  if (row.output_cost != null) parts.push(`<div class="flex justify-between mt-1.5"><b>Output:</b><span>${fmtCost(row.output_cost)}</span></div>`);
   return parts.length ? '<div class="w-32 flex flex-col gap-0.5">' + parts.join('') + '</div>' : '';
 }
 
 export function tokensTooltip(row) {
   const parts = [];
   if (row.input_tokens != null) parts.push(`<div class="flex justify-between"><b>Input:</b><span>${fmtTokens(row.input_tokens)}</span></div>`);
-  if (row.output_tokens != null) parts.push(`<div class="flex justify-between"><b>Output:</b><span>${fmtTokens(row.output_tokens)}</span></div>`);
   if (row.cache_creation_tokens != null) parts.push(`<div class="flex justify-between"><b>Cache create:</b><span>${fmtTokens(row.cache_creation_tokens)}</span></div>`);
   if (row.cache_read_tokens != null) parts.push(`<div class="flex justify-between"><b>Cache read:</b><span>${fmtTokens(row.cache_read_tokens)}</span></div>`);
+  if (row.output_tokens != null) parts.push(`<div class="flex justify-between mt-1.5"><b>Output:</b><span>${fmtTokens(row.output_tokens)}</span></div>`);
   return parts.length ? '<div class="w-32 flex flex-col gap-0.5">' + parts.join('') + '</div>' : '';
 }
 
