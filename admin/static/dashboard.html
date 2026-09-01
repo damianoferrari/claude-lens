@@ -106,7 +106,8 @@
             <th class="font-medium px-4 py-2">Session</th>
             <th class="font-medium text-right px-4 py-2">Exchanges</th>
             <th class="font-medium px-4 py-2">Model</th>
-            <th class="font-medium text-right px-4 py-2">Tokens</th>
+            <th class="font-medium text-right px-4 py-2">Tokens Processed <span class="text-xs text-gray-400" data-tip="Sum of tokens billed across every exchange in this session. Each exchange resends the full conversation so far, so this grows faster than the conversation's actual content — see Context Size for that.">ⓘ</span></th>
+            <th class="font-medium text-right px-4 py-2">Context Size</th>
             <th class="font-medium text-right px-4 py-2">Costs</th>
             <th class="font-medium px-4 py-2">Last activity</th>
             <th class="font-medium text-right px-4 py-2">Limiter</th>
@@ -114,7 +115,7 @@
         </thead>
         <tbody id="session-stats-tbody" class="divide-y divide-gray-100">
           <tr>
-            <td colspan="7" class="text-center text-gray-400 px-4 py-8">Loading…</td>
+            <td colspan="8" class="text-center text-gray-400 px-4 py-8">Loading…</td>
           </tr>
         </tbody>
       </table>

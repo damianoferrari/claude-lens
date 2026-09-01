@@ -113,6 +113,13 @@ type SessionStat struct {
 	TotalOutputCost          *float64 `json:"total_output_cost"`
 	TotalCacheCreationCost   *float64 `json:"total_cache_creation_cost"`
 	TotalCacheReadCost       *float64 `json:"total_cache_read_cost"`
+	// ContextInputTokens, ContextOutputTokens, ContextCacheCreationTokens, and
+	// ContextCacheReadTokens hold the last exchange's own token counts — see
+	// sessionStatsCTEs for why that differs from the Total* sums above.
+	ContextInputTokens         *int64 `json:"context_input_tokens"`
+	ContextOutputTokens        *int64 `json:"context_output_tokens"`
+	ContextCacheCreationTokens *int64 `json:"context_cache_creation_tokens"`
+	ContextCacheReadTokens     *int64 `json:"context_cache_read_tokens"`
 	// Model is the model used in the most exchanges within the session
 	// (ties broken alphabetically), or nil if no exchange in the session
 	// has a recorded model.
@@ -326,20 +333,29 @@ func (db *DB) GetTokenTotals(ctx context.Context, sessionID string, since *float
 
 // sessionStatsColumns is the column list shared by GetSessionStats and
 // GetSessionStatsSince — both aggregate the same shape, just scoped
-// differently.
+// differently. The le.* columns are wrapped in MAX() only to satisfy
+// GROUP BY e.session_id; last_exchange already joins 1:1 per session, so
+// it's a no-op, not an actual aggregation.
 const sessionStatsColumns = `e.session_id, MAX(e.session_name),
 		        COUNT(*),
 		        COALESCE(SUM(e.input_tokens), 0), COALESCE(SUM(e.output_tokens), 0),
 		        COALESCE(SUM(e.cache_creation_tokens), 0), COALESCE(SUM(e.cache_read_tokens), 0),
 		        COALESCE(SUM(e.cost), 0), SUM(e.input_cost), SUM(e.output_cost),
 		        SUM(e.cache_creation_cost), SUM(e.cache_read_cost),
+		        MAX(le.input_tokens), MAX(le.output_tokens),
+		        MAX(le.cache_creation_tokens), MAX(le.cache_read_tokens),
 		        MAX(e.timestamp), MAX(tm.model)`
 
-// topModelsCTE ranks each session's models by exchange count (ties broken
-// alphabetically for determinism) and keeps only the winner, so it can be
-// left-joined onto the per-session aggregate to surface the dominant model
-// without changing the GROUP BY session_id shape below.
-const topModelsCTE = `WITH top_models AS (
+// sessionStatsCTEs supplies the two per-session lookups joined onto the
+// GROUP BY e.session_id aggregate below. top_models ranks each session's
+// models by exchange count (ties broken alphabetically for determinism) and
+// keeps only the winner, so the dominant model can be surfaced without
+// changing the aggregate's shape. last_exchange keeps only the
+// most-recent-by-id row per session, so its token counts reflect the
+// conversation's current size instead of a sum across every call in the
+// session (each call resends the whole growing conversation, so summing
+// token counts across calls double-counts earlier turns).
+const sessionStatsCTEs = `WITH top_models AS (
 		    SELECT session_id, model
 		    FROM (
 		        SELECT session_id, model,
@@ -349,16 +365,25 @@ const topModelsCTE = `WITH top_models AS (
 		        GROUP BY session_id, model
 		    )
 		    WHERE rn = 1
+		), last_exchange AS (
+		    SELECT session_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens
+		    FROM (
+		        SELECT session_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+		               ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id DESC) AS rn
+		        FROM exchanges
+		    )
+		    WHERE rn = 1
 		)`
 
 // GetSessionStats returns a page of per-session aggregates, most recently
 // active first.
 func (db *DB) GetSessionStats(ctx context.Context, limit, offset int) ([]SessionStat, error) {
 	rows, err := db.sql.QueryContext(ctx,
-		topModelsCTE+`
+		sessionStatsCTEs+`
 		 SELECT `+sessionStatsColumns+`
 		 FROM exchanges e
 		 LEFT JOIN top_models tm ON tm.session_id = e.session_id
+		 LEFT JOIN last_exchange le ON le.session_id = e.session_id
 		 GROUP BY e.session_id
 		 ORDER BY MAX(e.timestamp) DESC
 		 LIMIT ? OFFSET ?`,
@@ -383,10 +408,11 @@ func (db *DB) CountSessionStats(ctx context.Context) (int, error) {
 // first.
 func (db *DB) GetSessionStatsSince(ctx context.Context, sinceID int64) ([]SessionStat, error) {
 	rows, err := db.sql.QueryContext(ctx,
-		topModelsCTE+`
+		sessionStatsCTEs+`
 		 SELECT `+sessionStatsColumns+`
 		 FROM exchanges e
 		 LEFT JOIN top_models tm ON tm.session_id = e.session_id
+		 LEFT JOIN last_exchange le ON le.session_id = e.session_id
 		 WHERE e.session_id IN (SELECT DISTINCT session_id FROM exchanges WHERE id > ?)
 		 GROUP BY e.session_id
 		 ORDER BY MAX(e.timestamp) DESC`,
@@ -406,12 +432,15 @@ func scanSessionStats(rows *sql.Rows) ([]SessionStat, error) {
 	for rows.Next() {
 		var s SessionStat
 		var totalInputCost, totalOutputCost, totalCacheCreationCost, totalCacheReadCost sql.NullFloat64
+		var contextInputTokens, contextOutputTokens, contextCacheCreationTokens, contextCacheReadTokens sql.NullInt64
 		var model sql.NullString
 		if err := rows.Scan(&s.SessionID, &s.SessionName, &s.ExchangeCount,
 			&s.TotalInputTokens, &s.TotalOutputTokens,
 			&s.TotalCacheCreationTokens, &s.TotalCacheReadTokens,
 			&s.TotalCost, &totalInputCost, &totalOutputCost,
 			&totalCacheCreationCost, &totalCacheReadCost,
+			&contextInputTokens, &contextOutputTokens,
+			&contextCacheCreationTokens, &contextCacheReadTokens,
 			&s.LastUpdated, &model); err != nil {
 			return nil, err
 		}
@@ -426,6 +455,18 @@ func scanSessionStats(rows *sql.Rows) ([]SessionStat, error) {
 		}
 		if totalCacheReadCost.Valid {
 			s.TotalCacheReadCost = &totalCacheReadCost.Float64
+		}
+		if contextInputTokens.Valid {
+			s.ContextInputTokens = &contextInputTokens.Int64
+		}
+		if contextOutputTokens.Valid {
+			s.ContextOutputTokens = &contextOutputTokens.Int64
+		}
+		if contextCacheCreationTokens.Valid {
+			s.ContextCacheCreationTokens = &contextCacheCreationTokens.Int64
+		}
+		if contextCacheReadTokens.Valid {
+			s.ContextCacheReadTokens = &contextCacheReadTokens.Int64
 		}
 		if model.Valid {
 			s.Model = &model.String

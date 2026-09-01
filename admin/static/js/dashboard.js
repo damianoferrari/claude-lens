@@ -124,7 +124,6 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
     const cost = session.total_cost ?? 0;
     const costStr = cost > 0 ? fmtCost(cost) : '—';
     const exchangeCount = session.exchange_count || 0;
-    const avgTok = exchangeCount ? totalTok / exchangeCount : 0;
     const avgCostStr = cost > 0 && exchangeCount ? fmtCost(cost / exchangeCount) : '—';
     const tokensRow = {
       input_tokens: inputTok,
@@ -138,6 +137,18 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
       cache_creation_cost: session.total_cache_creation_cost,
       cache_read_cost: session.total_cache_read_cost,
     };
+    // context_* fields are the last exchange's own token counts, not a sum
+    // across the session — see SessionStat's Context* fields in exchanges.go.
+    const ctxCacheTok = (session.context_cache_creation_tokens ?? 0) + (session.context_cache_read_tokens ?? 0);
+    const ctxInputTok = session.context_input_tokens ?? 0;
+    const ctxOutputTok = session.context_output_tokens ?? 0;
+    const contextSize = ctxInputTok + ctxOutputTok + ctxCacheTok;
+    const contextRow = {
+      input_tokens: session.context_input_tokens,
+      output_tokens: session.context_output_tokens,
+      cache_creation_tokens: session.context_cache_creation_tokens,
+      cache_read_tokens: session.context_cache_read_tokens,
+    };
     const sessionQuery = 'session = ' + JSON.stringify(session.session_id);
     const nameHtml = `<a href="/exchanges?q=${encodeURIComponent(sessionQuery)}" class="text-emerald-600 hover:underline font-medium">${esc(session.session_name || fmtSessionId(session.session_id, 24))}</a>${session.session_name ? `<span class="block text-xs text-gray-400 font-mono">${esc(fmtSessionId(session.session_id, 24))}</span>` : ''}`;
     return `<tr class="hover:bg-gray-50">
@@ -146,7 +157,9 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
       <td class="px-4 py-2 text-gray-700">${esc(session.model || '—')}</td>
       <td class="px-4 py-2 text-right text-gray-700" data-tip="${esc(tokensTooltip(tokensRow))}">
         ${fmtTokens(totalTok)}
-        <p class="text-xs text-gray-400">avg ${fmtTokens(avgTok)}</p>
+      </td>
+      <td class="px-4 py-2 text-right text-gray-700" data-tip="${esc(tokensTooltip(contextRow))}">
+        ${fmtTokens(contextSize)}
       </td>
       <td class="px-4 py-2 text-right text-gray-700" data-tip="${esc(costTooltip(costsRow))}">
         ${costStr}
@@ -162,7 +175,7 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
     if (!tbody) return;
     tbody.innerHTML = lastSessionRows.length
       ? lastSessionRows.map(buildSessionRow).join('')
-      : '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-400">No sessions yet.</td></tr>';
+      : '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-400">No sessions yet.</td></tr>';
   }
 
   function renderSessionPagination() {
