@@ -41,8 +41,8 @@ You may provide flags to the install script to customize the Envs.
 | `--proxy-base-url` | `https://api.anthropic.com` | `CLENS_PROXY_BASE_URL` |
 | `--proxy-auth-token` | — | `CLENS_PROXY_AUTH_TOKEN` |
 | `--proxy-custom-header` | — | `CLENS_PROXY_CUSTOM_HEADERS` (repeatable) |
-| `--proxy-addr` | `:7801` | `CLENS_PROXY_ADDR` |
-| `--admin-addr` | `:7802` | `CLENS_ADMIN_ADDR` |
+| `--proxy-addr` | `7801` | `CLENS_PROXY_ADDR` |
+| `--admin-addr` | `7802` | `CLENS_ADMIN_ADDR` |
 | `--install-dir` | `/usr/local/bin` (Linux), REQUIRED in (macOS) | |
 | `--data-dir` | `/var/lib/claude-lens` | `CLENS_DATA_DIR` |
 | `--log-dir` | `/var/log/claude-lens` | `CLENS_LOG_DIR` |
@@ -70,11 +70,12 @@ curl -sSL https://raw.githubusercontent.com/lfsc09/claude-lens/main/scripts/inst
   --proxy-auth-token sk-ant-your-token \
   --proxy-custom-header "X-My-Header: value" \
   --proxy-custom-header "X-Another-Header: value" \
-  --proxy-addr :7801 \
-  --admin-addr :7802 \
+  --proxy-addr 7801 \
+  --admin-addr 7802 \
   --install-dir ~/claude-lens \
   --data-dir ~/claude-lens/data \
-  --log-dir ~/claude-lens/logs
+  --log-dir ~/claude-lens/logs \
+  --as-service
 ```
 
 #### MacOS

@@ -11,12 +11,44 @@ CHECKSUM_URL="${DOWNLOAD_URL}.sha256"
 SERVICE_USER="claude-lens"
 SERVICE_GROUP="claude-lens"
 
+SCRIPT_NAME="install_linux.sh"
+_COLOR_YELLOW=$'\033[33m'
+_COLOR_RED=$'\033[31m'
+_COLOR_RESET=$'\033[0m'
+
+# log prints a message to the terminal, prefixed with the script name.
+# level selects the channel and coloring: info (stdout, plain),
+# warn (stdout, yellow) or error (stderr, red).
+log() {
+  local level="$1"
+  shift
+  local message="$*"
+  case "$level" in
+    info) printf '%s: %s\n' "$SCRIPT_NAME" "$message" ;;
+    warn) printf '%s: %s%s%s\n' "$SCRIPT_NAME" "$_COLOR_YELLOW" "$message" "$_COLOR_RESET" ;;
+    error) printf '%s: %s%s%s\n' "$SCRIPT_NAME" "$_COLOR_RED" "$message" "$_COLOR_RESET" >&2 ;;
+  esac
+}
+
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
   else
     shasum -a 256 "$1" | awk '{print $1}'
   fi
+}
+
+# normalize_port strips an optional leading ":" from value and prints the
+# remaining port number, or exits with an error if it isn't one.
+normalize_port() {
+  local flag="$1" port="${2#:}"
+  case "$port" in
+    ''|*[!0-9]*)
+      log error "${flag} must be a plain port number (e.g. 7801), got '${2}'."
+      exit 1
+      ;;
+  esac
+  printf '%s' "$port"
 }
 
 usage() {
@@ -30,8 +62,8 @@ service. Any option you omit keeps whatever was set on a previous run
   --proxy-base-url URL      Upstream API URL (default: https://api.anthropic.com)
   --proxy-auth-token TOKEN  Authorization value forwarded upstream
   --proxy-custom-header "H: v"  Extra header forwarded upstream (repeatable)
-  --proxy-addr ADDR         Proxy listen address (default: :7801)
-  --admin-addr ADDR         Admin listen address (default: :7802)
+  --proxy-addr PORT         Proxy listen port (default: 7801)
+  --admin-addr PORT         Admin listen port (default: 7802)
   --install-dir PATH        Base directory for the binary (default: /usr/local/bin)
   --data-dir PATH           SQLite database directory (default: /var/lib/claude-lens,
                              or {--install-dir}/data if --install-dir is set)
@@ -46,8 +78,8 @@ USAGE
 # ── Defaults ──────────────────────────────────────────────────────────
 CLENS_PROXY_BASE_URL="https://api.anthropic.com"
 CLENS_PROXY_AUTH_TOKEN=""
-CLENS_PROXY_ADDR=":7801"
-CLENS_ADMIN_ADDR=":7802"
+CLENS_PROXY_ADDR="7801"
+CLENS_ADMIN_ADDR="7802"
 CLENS_INSTALL_DIR=""
 CLENS_DATA_DIR=""
 CLENS_LOG_DIR=""
@@ -82,9 +114,14 @@ while [ $# -gt 0 ]; do
     --log-dir=*) CLENS_LOG_DIR="${1#*=}"; shift ;;
     --as-service) CLENS_AS_SERVICE="true"; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
+    *) log error "Unknown option: $1"; usage; exit 1 ;;
   esac
 done
+
+# --proxy-addr/--admin-addr accept a bare port number; normalized here to
+# the ":port" form CLENS_PROXY_ADDR/CLENS_ADMIN_ADDR carry at runtime.
+CLENS_PROXY_ADDR=":$(normalize_port --proxy-addr "$CLENS_PROXY_ADDR")"
+CLENS_ADMIN_ADDR=":$(normalize_port --admin-addr "$CLENS_ADMIN_ADDR")"
 
 # Only replace the persisted custom headers if --proxy-custom-header was passed
 # at least once this run. Stored pre-escaped (literal "\n" between
@@ -124,7 +161,7 @@ if [ -z "$CLENS_LOG_DIR" ]; then
 fi
 
 if [ "$EUID" -ne 0 ]; then
-  echo "Please run as root (e.g., sudo ./install_linux.sh)"
+  log error "Please run as root (e.g., sudo ./install_linux.sh)"
   exit 1
 fi
 
@@ -135,36 +172,45 @@ fi
 proxy_port="${CLENS_PROXY_ADDR##*:}"
 expected_anthropic_url="http://localhost:${proxy_port}"
 
+# sudo resets the environment by default, so this script never inherits
+# ANTHROPIC_BASE_URL from the invoking user's shell (e.g. via
+# `curl ... | sudo bash`). Fall back to reading it straight from that
+# user's own login shell, which is unaffected by anything sudo stripped.
+if [ -z "${ANTHROPIC_BASE_URL:-}" ] && [ -n "${SUDO_USER:-}" ]; then
+  invoking_shell="$(getent passwd "$SUDO_USER" | cut -d: -f7)"
+  ANTHROPIC_BASE_URL="$(sudo -u "$SUDO_USER" -H "${invoking_shell:-/bin/bash}" -lc 'printf %s "$ANTHROPIC_BASE_URL"' 2>/dev/null || true)"
+fi
+
 if [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
   if [ "$ANTHROPIC_BASE_URL" != "$expected_anthropic_url" ]; then
-    echo "ERROR: ANTHROPIC_BASE_URL is set to '${ANTHROPIC_BASE_URL}', but this install listens at '${expected_anthropic_url}' (from --proxy-addr=${CLENS_PROXY_ADDR})." >&2
-    echo "Fix this manually before continuing - either:" >&2
-    echo "  export ANTHROPIC_BASE_URL=${expected_anthropic_url}" >&2
-    echo "or re-run this installer with --proxy-addr matching your existing ANTHROPIC_BASE_URL port." >&2
+    log error "ANTHROPIC_BASE_URL is set to '${ANTHROPIC_BASE_URL}', but this install listens at '${expected_anthropic_url}' (from --proxy-addr=${proxy_port})."
+    log error "Fix this manually before continuing - either:"
+    log error "  export ANTHROPIC_BASE_URL=${expected_anthropic_url}"
+    log error "or re-run this installer with --proxy-addr matching your existing ANTHROPIC_BASE_URL port."
     exit 1
   fi
-  echo "ANTHROPIC_BASE_URL already points at ${expected_anthropic_url} - good."
+  log info "ANTHROPIC_BASE_URL already points at ${expected_anthropic_url} - good."
 else
-  echo "NOTE: ANTHROPIC_BASE_URL is not set. Claude Code will not route through claude-lens until you set it and persist it in your shell profile:"
-  echo "  export ANTHROPIC_BASE_URL=${expected_anthropic_url}"
+  log warn "ANTHROPIC_BASE_URL is not set. Claude Code will not route through claude-lens until you set it and persist it in your shell profile:"
+  log warn "  export ANTHROPIC_BASE_URL=${expected_anthropic_url}"
 fi
 
 # ── Stop and disable if already running/installed ───────────────────────
 if [ "$CLENS_AS_SERVICE" = "true" ]; then
   if systemctl is-active --quiet "$SERVICE_NAME" || systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
-    echo "Existing ${SERVICE_NAME} service detected. Stopping service..."
+    log info "Existing ${SERVICE_NAME} service detected. Stopping service..."
     systemctl stop "$SERVICE_NAME" || true
     systemctl disable "$SERVICE_NAME" || true
   fi
 
   if [ -f "$SERVICE_FILE" ]; then
-    echo "Removing existing service file..."
+    log info "Removing existing service file..."
     rm -f "$SERVICE_FILE"
     systemctl daemon-reload
   fi
 fi
 
-echo "Downloading latest ${SERVICE_NAME} binary and checksum..."
+log info "Downloading latest ${SERVICE_NAME} binary and checksum..."
 tmp_bin="$(mktemp)"
 tmp_sha="$(mktemp)"
 trap 'rm -f "$tmp_bin" "$tmp_sha"' EXIT
@@ -174,8 +220,8 @@ curl -fsSL "$CHECKSUM_URL" -o "$tmp_sha"
 expected_sha="$(awk '{print $1}' "$tmp_sha")"
 actual_sha="$(sha256_of "$tmp_bin")"
 if [ "$expected_sha" != "$actual_sha" ]; then
-  echo "ERROR: checksum mismatch for downloaded binary (expected ${expected_sha}, got ${actual_sha})." >&2
-  echo "Aborting - the existing installation, if any, was left untouched." >&2
+  log error "checksum mismatch for downloaded binary (expected ${expected_sha}, got ${actual_sha})."
+  log error "Aborting - the existing installation, if any, was left untouched."
   exit 1
 fi
 
@@ -186,16 +232,16 @@ chmod +x "${INSTALL_DIR}/${SERVICE_NAME}"
 if [ "$CLENS_AS_SERVICE" = "true" ]; then
   nologin_shell="$(command -v nologin || echo /usr/sbin/nologin)"
   if ! getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
-    echo "Creating system group ${SERVICE_GROUP}..."
+    log info "Creating system group ${SERVICE_GROUP}..."
     groupadd --system "$SERVICE_GROUP"
   fi
   if ! getent passwd "$SERVICE_USER" >/dev/null 2>&1; then
-    echo "Creating system user ${SERVICE_USER}..."
+    log info "Creating system user ${SERVICE_USER}..."
     useradd --system --no-create-home --shell "$nologin_shell" --gid "$SERVICE_GROUP" "$SERVICE_USER"
   fi
 fi
 
-echo "Preparing data/log directories..."
+log info "Preparing data/log directories..."
 mkdir -p "$CLENS_DATA_DIR" "$CLENS_LOG_DIR" "$CONFIG_DIR"
 if [ "$CLENS_AS_SERVICE" = "true" ]; then
   chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$CLENS_DATA_DIR" "$CLENS_LOG_DIR"
@@ -203,7 +249,7 @@ else
   chown -R "${SUDO_USER:-root}" "$CLENS_DATA_DIR" "$CLENS_LOG_DIR"
 fi
 
-echo "Writing ${ENV_FILE}..."
+log info "Writing ${ENV_FILE}..."
 cat <<EOF > "$ENV_FILE"
 CLENS_PROXY_BASE_URL="${CLENS_PROXY_BASE_URL}"
 CLENS_PROXY_AUTH_TOKEN="${CLENS_PROXY_AUTH_TOKEN}"
@@ -224,7 +270,7 @@ if [ "$CLENS_AS_SERVICE" = "true" ]; then
     headers_env_line="Environment=\"CLENS_PROXY_CUSTOM_HEADERS=${_CLENS_CUSTOM_HEADERS_ESCAPED}\""
   fi
 
-  echo "Creating systemd service unit..."
+  log info "Creating systemd service unit..."
   cat <<EOF > "$SERVICE_FILE"
 [Unit]
 Description=Claude Lens Background Service
@@ -245,16 +291,16 @@ Group=${SERVICE_GROUP}
 WantedBy=multi-user.target
 EOF
 
-  echo "Reloading systemd, enabling, and starting service..."
+  log info "Reloading systemd, enabling, and starting service..."
   systemctl daemon-reload
   systemctl enable "$SERVICE_NAME"
   systemctl start "$SERVICE_NAME"
 
-  echo "${SERVICE_NAME} installed/updated and started as a systemd service!"
-  echo "Proxy listening on ${CLENS_PROXY_ADDR}, admin UI on ${CLENS_ADMIN_ADDR}."
-  echo "Config saved to ${ENV_FILE} - editing the simple values there and running 'systemctl restart ${SERVICE_NAME}' applies them (custom headers need a re-run of this installer)."
+  log info "${SERVICE_NAME} installed/updated and started as a systemd service!"
+  log info "Proxy listening on ${CLENS_PROXY_ADDR}, admin UI on ${CLENS_ADMIN_ADDR}."
+  log info "Config saved to ${ENV_FILE} - editing the simple values there and running 'systemctl restart ${SERVICE_NAME}' applies them (custom headers need a re-run of this installer)."
 else
-  echo "${SERVICE_NAME} binary installed/updated at ${INSTALL_DIR}/${SERVICE_NAME}."
-  echo "Config saved to ${ENV_FILE}."
-  echo "Re-run this installer with --as-service to configure and start it as a systemd service."
+  log info "${SERVICE_NAME} binary installed/updated at ${INSTALL_DIR}/${SERVICE_NAME}."
+  log info "Config saved to ${ENV_FILE}."
+  log info "Re-run this installer with --as-service to configure and start it as a systemd service."
 fi
