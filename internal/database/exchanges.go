@@ -133,9 +133,10 @@ type DailyCost struct {
 	DailyCost float64 `json:"daily_cost"`
 }
 
-// SaveExchange inserts one exchange row. On failure it logs the error and
-// returns it; the caller decides whether that should affect a response
-// already sent to the client.
+// SaveExchange inserts one exchange row and its mirrored exchanges_ledger
+// bookkeeping row in a single transaction, so the two never drift out of
+// sync. On failure it logs the error and returns it; the caller decides
+// whether that should affect a response already sent to the client.
 func (db *DB) SaveExchange(ctx context.Context, e Exchange) error {
 	var cost *float64
 	if sum, any := sumCosts(e.InputCost, e.OutputCost, e.CacheCreationCost, e.CacheReadCost); any {
@@ -143,7 +144,14 @@ func (db *DB) SaveExchange(ctx context.Context, e Exchange) error {
 		cost = &c
 	}
 
-	_, err := db.sql.ExecContext(ctx,
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		slog.Error("save exchange failed", "error", err, "session_id", e.SessionID)
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
 		`INSERT INTO exchanges
 			(session_id, session_name, path, timestamp, is_streaming,
 			 input_messages, output_text, input_tokens, output_tokens,
@@ -158,6 +166,21 @@ func (db *DB) SaveExchange(ctx context.Context, e Exchange) error {
 		e.RawRequest, e.RawResponse,
 	)
 	if err != nil {
+		slog.Error("save exchange failed", "error", err, "session_id", e.SessionID)
+		return err
+	}
+
+	exchangeID, err := res.LastInsertId()
+	if err != nil {
+		slog.Error("save exchange failed", "error", err, "session_id", e.SessionID)
+		return err
+	}
+	if err := insertLedgerEntry(ctx, tx, exchangeID, e, cost); err != nil {
+		slog.Error("save exchange ledger entry failed", "error", err, "session_id", e.SessionID)
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
 		slog.Error("save exchange failed", "error", err, "session_id", e.SessionID)
 		return err
 	}
@@ -287,14 +310,16 @@ func (db *DB) GetExchangeDetail(ctx context.Context, id int64) (*ExchangeDetail,
 }
 
 // GetTokenTotals returns aggregate token/cost counts, optionally scoped to a
-// session (sessionID == "" for no filter) and/or a start timestamp.
+// session (sessionID == "" for no filter) and/or a start timestamp. Reads
+// from exchanges_ledger rather than exchanges so totals stay accurate after
+// DeleteExchanges reclaims space from a session's raw payloads.
 func (db *DB) GetTokenTotals(ctx context.Context, sessionID string, since *float64) (Totals, error) {
 	query := `SELECT COUNT(*),
 	                 SUM(input_tokens), SUM(output_tokens),
 	                 SUM(cache_creation_tokens), SUM(cache_read_tokens),
 	                 SUM(cost), SUM(input_cost), SUM(output_cost),
 	                 SUM(cache_creation_cost), SUM(cache_read_cost)
-	          FROM exchanges`
+	          FROM exchanges_ledger`
 	var conditions []string
 	var args []any
 	if sessionID != "" {
@@ -477,13 +502,15 @@ func scanSessionStats(rows *sql.Rows) ([]SessionStat, error) {
 }
 
 // GetDailyCosts returns daily cost totals for the last `days` days
-// (local-time bucketed), oldest first.
+// (local-time bucketed), oldest first. Reads from exchanges_ledger rather
+// than exchanges so the heatmap stays accurate after DeleteExchanges
+// reclaims space from a session's raw payloads.
 func (db *DB) GetDailyCosts(ctx context.Context, days int) ([]DailyCost, error) {
 	cutoff := float64(time.Now().AddDate(0, 0, -days).Unix())
 	rows, err := db.sql.QueryContext(ctx,
 		`SELECT date(timestamp, 'unixepoch', 'localtime') as day,
 		        SUM(COALESCE(cost, 0))
-		 FROM exchanges
+		 FROM exchanges_ledger
 		 WHERE timestamp >= ?
 		 GROUP BY day
 		 ORDER BY day`,

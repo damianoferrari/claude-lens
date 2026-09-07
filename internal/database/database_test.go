@@ -173,6 +173,57 @@ func TestSaveAndGetExchange(t *testing.T) {
 	if missing != nil {
 		t.Fatalf("GetExchangeDetail(missing) = %+v, want nil", missing)
 	}
+
+	_, exchangeID, sessionID, cost := ledgerRowByExchangeID(t, db, got.ID)
+	if exchangeID == nil || *exchangeID != got.ID {
+		t.Errorf("ledger exchange_id = %v, want %d", exchangeID, got.ID)
+	}
+	if sessionID != "sess-1" {
+		t.Errorf("ledger session_id = %q, want sess-1", sessionID)
+	}
+	wantLedgerCost := 0.00105
+	if cost == nil || round4(*cost) != round4(wantLedgerCost) {
+		t.Errorf("ledger cost = %v, want ~%v", cost, wantLedgerCost)
+	}
+}
+
+// ledgerRowByExchangeID reads the sole exchanges_ledger row for exchangeID,
+// failing the test if there isn't exactly one.
+func ledgerRowByExchangeID(t *testing.T, db *DB, exchangeID int64) (ledgerID int64, gotExchangeID *int64, sessionID string, cost *float64) {
+	t.Helper()
+	rows, err := db.sql.Query(`SELECT id, exchange_id, session_id, cost FROM exchanges_ledger WHERE exchange_id = ?`, exchangeID)
+	if err != nil {
+		t.Fatalf("query exchanges_ledger: %v", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatalf("no exchanges_ledger row for exchange_id %d", exchangeID)
+	}
+	var ex sql.NullInt64
+	if err := rows.Scan(&ledgerID, &ex, &sessionID, &cost); err != nil {
+		t.Fatalf("scan exchanges_ledger row: %v", err)
+	}
+	if ex.Valid {
+		gotExchangeID = &ex.Int64
+	}
+	if rows.Next() {
+		t.Fatalf("more than one exchanges_ledger row for exchange_id %d", exchangeID)
+	}
+	return ledgerID, gotExchangeID, sessionID, cost
+}
+
+// ledgerExchangeIDByLedgerID reads exchange_id off one exchanges_ledger row
+// by its own id, returning nil if the column is NULL.
+func ledgerExchangeIDByLedgerID(t *testing.T, db *DB, ledgerID int64) *int64 {
+	t.Helper()
+	var ex sql.NullInt64
+	if err := db.sql.QueryRow(`SELECT exchange_id FROM exchanges_ledger WHERE id = ?`, ledgerID).Scan(&ex); err != nil {
+		t.Fatalf("query exchanges_ledger by id: %v", err)
+	}
+	if !ex.Valid {
+		return nil
+	}
+	return &ex.Int64
 }
 
 func TestGetExchanges_SessionFilterAndPagination(t *testing.T) {
@@ -559,6 +610,119 @@ func TestDeleteExchanges(t *testing.T) {
 	}
 	if len(remaining) != 1 {
 		t.Fatalf("empty session_id should not delete rows: got %d remaining, want 1", len(remaining))
+	}
+}
+
+// TestDeleteExchanges_LedgerSurvives verifies that DeleteExchanges only
+// removes exchanges rows: the mirrored exchanges_ledger rows stay behind
+// (with exchange_id nulled out by the FK's ON DELETE SET NULL), so global
+// history (GetTokenTotals, GetDailyCosts) keeps counting a purged session
+// even though it drops out of the exchange list.
+func TestDeleteExchanges_LedgerSurvives(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := float64(time.Now().Unix())
+
+	purged := Exchange{
+		SessionID: "purge-me", Path: "/p", Timestamp: now, RawRequest: "{}", RawResponse: "{}",
+		InputTokens: intPtr(10), OutputTokens: intPtr(5),
+		InputCost: floatPtr(0.01), OutputCost: floatPtr(0.02),
+	}
+	if err := db.SaveExchange(ctx, purged); err != nil {
+		t.Fatalf("SaveExchange: %v", err)
+	}
+	list, err := db.GetExchanges(ctx, "", 10, 0)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("GetExchanges before delete: %v, %+v", err, list)
+	}
+	ledgerID, _, _, _ := ledgerRowByExchangeID(t, db, list[0].ID)
+
+	beforeTotals, err := db.GetTokenTotals(ctx, "", nil)
+	if err != nil {
+		t.Fatalf("GetTokenTotals before delete: %v", err)
+	}
+
+	if n, err := db.DeleteExchanges(ctx, "purge-me"); err != nil || n != 1 {
+		t.Fatalf("DeleteExchanges: n=%d err=%v", n, err)
+	}
+
+	remaining, err := db.GetExchanges(ctx, "", 10, 0)
+	if err != nil {
+		t.Fatalf("GetExchanges after delete: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("exchanges row survived delete: %+v", remaining)
+	}
+
+	afterTotals, err := db.GetTokenTotals(ctx, "", nil)
+	if err != nil {
+		t.Fatalf("GetTokenTotals after delete: %v", err)
+	}
+	if !reflect.DeepEqual(beforeTotals, afterTotals) {
+		t.Errorf("totals changed after deleting exchanges: before=%+v after=%+v", beforeTotals, afterTotals)
+	}
+	if afterTotals.TotalCost == nil || round4(*afterTotals.TotalCost) != round4(0.03) {
+		t.Errorf("TotalCost after delete = %v, want ~0.03", afterTotals.TotalCost)
+	}
+
+	daily, err := db.GetDailyCosts(ctx, 60)
+	if err != nil {
+		t.Fatalf("GetDailyCosts after delete: %v", err)
+	}
+	if len(daily) != 1 || round4(daily[0].DailyCost) != round4(0.03) {
+		t.Fatalf("GetDailyCosts after delete = %+v, want one bucket of ~0.03", daily)
+	}
+
+	if exchangeID := ledgerExchangeIDByLedgerID(t, db, ledgerID); exchangeID != nil {
+		t.Errorf("ledger exchange_id after delete = %v, want nil (ON DELETE SET NULL)", *exchangeID)
+	}
+}
+
+// TestMigrateExchangesLedgerBackfill verifies that an exchanges row written
+// before exchanges_ledger existed (simulated here with a raw INSERT that
+// bypasses SaveExchange) gets a matching ledger row created on the next
+// Open, and that re-running the backfill doesn't duplicate it.
+func TestMigrateExchangesLedgerBackfill(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := float64(time.Now().Unix())
+
+	res, err := db.sql.ExecContext(ctx,
+		`INSERT INTO exchanges (session_id, path, timestamp, is_streaming, cost, input_cost, output_cost)
+		 VALUES (?, '/p', ?, 0, ?, ?, ?)`,
+		"legacy-sess", now, 0.05, 0.02, 0.03,
+	)
+	if err != nil {
+		t.Fatalf("insert legacy exchange: %v", err)
+	}
+	exchangeID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
+	}
+
+	if err := migrateExchangesLedgerBackfill(ctx, db.sql); err != nil {
+		t.Fatalf("migrateExchangesLedgerBackfill: %v", err)
+	}
+	_, gotExchangeID, sessionID, cost := ledgerRowByExchangeID(t, db, exchangeID)
+	if gotExchangeID == nil || *gotExchangeID != exchangeID {
+		t.Errorf("backfilled exchange_id = %v, want %d", gotExchangeID, exchangeID)
+	}
+	if sessionID != "legacy-sess" {
+		t.Errorf("backfilled session_id = %q, want legacy-sess", sessionID)
+	}
+	if cost == nil || round4(*cost) != round4(0.05) {
+		t.Errorf("backfilled cost = %v, want ~0.05", cost)
+	}
+
+	if err := migrateExchangesLedgerBackfill(ctx, db.sql); err != nil {
+		t.Fatalf("migrateExchangesLedgerBackfill (rerun): %v", err)
+	}
+	var count int
+	if err := db.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM exchanges_ledger WHERE exchange_id = ?`, exchangeID).Scan(&count); err != nil {
+		t.Fatalf("count exchanges_ledger rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("backfill rerun duplicated rows: got %d, want 1", count)
 	}
 }
 
