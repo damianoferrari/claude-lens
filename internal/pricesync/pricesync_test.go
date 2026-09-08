@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,9 +89,9 @@ func TestSync_NonLiteLLMUpstreamReturnsErrorWithoutSideEffects(t *testing.T) {
 }
 
 func TestRunLoop_SyncsImmediatelyWhenDueThenStopsOnCancel(t *testing.T) {
-	var hits int
+	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		hits.Add(1)
 		w.Write([]byte(`{"data":[]}`))
 	}))
 	defer srv.Close()
@@ -110,9 +111,12 @@ func TestRunLoop_SyncsImmediatelyWhenDueThenStopsOnCancel(t *testing.T) {
 
 	// A fresh DB has LiteLLMLastSyncedAt == 0, so RunLoop's immediate
 	// check-and-sync (before it ever waits on pollInterval) must fire
-	// right away, without needing to wait out a real interval.
+	// right away, without needing to wait out a real interval. hits is
+	// written from the httptest server's own goroutine while this loop
+	// polls it from the test goroutine, hence the atomic rather than a
+	// plain int.
 	deadline := time.After(2 * time.Second)
-	for hits == 0 {
+	for hits.Load() == 0 {
 		select {
 		case <-deadline:
 			t.Fatal("RunLoop never synced within 2s of starting (a fresh DB should always be immediately due)")
