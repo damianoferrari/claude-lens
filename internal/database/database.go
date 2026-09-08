@@ -7,13 +7,33 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 
+	"github.com/lfsc09/claude-lens/internal/notify"
 	_ "modernc.org/sqlite"
 )
 
 // DB wraps a *sql.DB configured for claude-lens' schema and concurrency model.
 type DB struct {
 	sql *sql.DB
+
+	// notifier drives Slack alert delivery from accrueLimiterCost. Unset
+	// (nil) until SetNotifications is called, in which case alert dispatch
+	// is silently skipped.
+	notifier *notify.Client
+
+	// alertMu serializes accrueLimiterCost's read-check-write of each
+	// limiter's alert state, so two exchanges completing close together for
+	// the same limiter can't both observe AlertSent == false and send a
+	// duplicate budget-threshold alert.
+	alertMu sync.Mutex
+}
+
+// SetNotifications wires up Slack delivery for limiter alerts (both the
+// budget-threshold and per-request-cost kinds). Safe to skip calling
+// entirely — accrueLimiterCost just won't send alerts.
+func (db *DB) SetNotifications(client *notify.Client) {
+	db.notifier = client
 }
 
 const schema = `
@@ -92,7 +112,13 @@ CREATE TABLE IF NOT EXISTS limiters (
     is_active         INTEGER NOT NULL DEFAULT 1,
     created_at        REAL    NOT NULL,
     updated_at        REAL    NOT NULL,
-    CHECK ((active_start_hour IS NULL) = (active_end_hour IS NULL))
+    slack_webhook_url    TEXT    NOT NULL DEFAULT '',
+    alert_threshold_pct  INTEGER,
+    alert_sent           INTEGER NOT NULL DEFAULT 0,
+    alert_request_cost_usd REAL,
+    CHECK ((active_start_hour IS NULL) = (active_end_hour IS NULL)),
+    CHECK (alert_threshold_pct IS NULL OR (alert_threshold_pct BETWEEN 1 AND 100)),
+    CHECK (alert_request_cost_usd IS NULL OR alert_request_cost_usd > 0)
 );
 CREATE INDEX IF NOT EXISTS idx_limiters_session_id ON limiters (session_id);
 `
@@ -113,6 +139,12 @@ var newColumns = map[string][]string{
 	"model_prices": {
 		"cache_write_per_m REAL NOT NULL DEFAULT 0",
 		"cache_read_per_m REAL NOT NULL DEFAULT 0",
+	},
+	"limiters": {
+		"slack_webhook_url TEXT NOT NULL DEFAULT ''",
+		"alert_threshold_pct INTEGER",
+		"alert_sent INTEGER NOT NULL DEFAULT 0",
+		"alert_request_cost_usd REAL",
 	},
 }
 

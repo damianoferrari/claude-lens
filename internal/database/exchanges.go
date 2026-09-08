@@ -186,7 +186,7 @@ func (db *DB) SaveExchange(ctx context.Context, e Exchange) error {
 	}
 
 	if cost != nil {
-		if err := db.accrueLimiterCost(ctx, e.SessionID, *cost); err != nil {
+		if err := db.accrueLimiterCost(ctx, e.SessionID, *cost, e.Model); err != nil {
 			slog.Error("accrue limiter cost failed", "error", err, "session_id", e.SessionID)
 		}
 	}

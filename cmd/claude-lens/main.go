@@ -15,6 +15,7 @@ import (
 	"github.com/lfsc09/claude-lens/internal/config"
 	"github.com/lfsc09/claude-lens/internal/database"
 	"github.com/lfsc09/claude-lens/internal/logging"
+	"github.com/lfsc09/claude-lens/internal/notify"
 	"github.com/lfsc09/claude-lens/internal/pricing"
 	"github.com/lfsc09/claude-lens/internal/status"
 	"github.com/lfsc09/claude-lens/proxy"
@@ -38,6 +39,8 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+
+	db.SetNotifications(notify.NewClient())
 
 	est := pricing.New(db)
 	if err := est.Refresh(ctx); err != nil {

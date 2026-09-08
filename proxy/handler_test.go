@@ -23,6 +23,11 @@ import (
 
 func newTestHandler(t *testing.T, upstreamURL string) (*Handler, *database.DB) {
 	t.Helper()
+	return newTestHandlerWithConfig(t, config.Config{AnthropicBaseURL: upstreamURL})
+}
+
+func newTestHandlerWithConfig(t *testing.T, cfg config.Config) (*Handler, *database.DB) {
+	t.Helper()
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("database.Open: %v", err)
@@ -34,7 +39,6 @@ func newTestHandler(t *testing.T, upstreamURL string) (*Handler, *database.DB) {
 		t.Fatalf("Refresh: %v", err)
 	}
 
-	cfg := config.Config{AnthropicBaseURL: upstreamURL}
 	h, err := NewHandler(cfg, db, est, status.New(), status.NewFresh(), status.NewFresh())
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
