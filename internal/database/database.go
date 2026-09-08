@@ -124,7 +124,7 @@ CREATE INDEX IF NOT EXISTS idx_limiters_session_id ON limiters (session_id);
 
 CREATE TABLE IF NOT EXISTS settings (
     id                             INTEGER PRIMARY KEY CHECK (id = 1),
-    litellm_sync_interval_minutes  INTEGER NOT NULL DEFAULT 1440,
+    litellm_sync_interval_minutes  INTEGER NOT NULL DEFAULT 60,
     litellm_last_synced_at         REAL    NOT NULL DEFAULT 0,
     updated_at                     REAL    NOT NULL
 );

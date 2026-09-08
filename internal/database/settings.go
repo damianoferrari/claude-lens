@@ -5,10 +5,10 @@ import (
 	"time"
 )
 
-// defaultLiteLLMSyncIntervalMinutes is once a day — model prices change
+// defaultLiteLLMSyncIntervalMinutes is once an hour — model prices change
 // rarely (see internal/pricing), so this just needs to catch drift, not
 // react to it quickly.
-const defaultLiteLLMSyncIntervalMinutes = 24 * 60
+const defaultLiteLLMSyncIntervalMinutes = 60
 
 // Settings is the single global row of admin-configurable settings that
 // don't belong to any one entity (unlike, say, a Limiter's own Slack
