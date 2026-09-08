@@ -12,6 +12,7 @@ import (
 
 	"github.com/lfsc09/claude-lens/internal/database"
 	"github.com/lfsc09/claude-lens/internal/files"
+	"github.com/lfsc09/claude-lens/internal/litellm"
 	"github.com/lfsc09/claude-lens/internal/pricing"
 	"github.com/lfsc09/claude-lens/internal/status"
 )
@@ -46,6 +47,13 @@ type handlers struct {
 	version       string
 	dbPath        string
 	logPath       string
+
+	// litellmClient/proxyBaseURL/proxyAuthToken back syncPricesFromLiteLLM.
+	// proxyBaseURL/proxyAuthToken are the same upstream claude-lens' proxy
+	// forwards to — only meaningful when that upstream is a LiteLLM proxy.
+	litellmClient  *litellm.Client
+	proxyBaseURL   string
+	proxyAuthToken string
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -326,6 +334,49 @@ func (h *handlers) createPrice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
+}
+
+// syncLiteLLMResponse reports what syncPricesFromLiteLLM did, so the admin
+// UI can show a meaningful summary instead of a bare "ok".
+type syncLiteLLMResponse struct {
+	Created int      `json:"created"`
+	Updated int      `json:"updated"`
+	Models  []string `json:"models"`
+}
+
+// syncPricesFromLiteLLM pulls authoritative per-model rates from the
+// configured upstream's LiteLLM /model/info endpoint and upserts each
+// model's unconditional ("over 0") price rule, so the Prices table stops
+// drifting from what LiteLLM actually bills. Any tiered rules an admin has
+// added on top of a model are left untouched (see UpsertPriceFromSync).
+func (h *handlers) syncPricesFromLiteLLM(w http.ResponseWriter, r *http.Request) {
+	prices, err := h.litellmClient.FetchModelPrices(r.Context(), h.proxyBaseURL, h.proxyAuthToken)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	now := float64(time.Now().Unix())
+	resp := syncLiteLLMResponse{Models: make([]string, 0, len(prices))}
+	for _, p := range prices {
+		created, err := h.db.UpsertPriceFromSync(r.Context(), p.ModelName, p.InputPerM, p.OutputPerM, p.CacheWritePerM, p.CacheReadPerM, now)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if created {
+			resp.Created++
+		} else {
+			resp.Updated++
+		}
+		resp.Models = append(resp.Models, p.ModelName)
+	}
+
+	if err := h.est.Refresh(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type updatePriceRequest struct {

@@ -429,6 +429,34 @@ import { esc, extractErrorMessage, fmtInt, fmtTime, initNavPolling, makeDialogMe
     addForm?.reset();
   });
 
+  // ── Sync from LiteLLM ─────────────────────────────────────────────────
+  const syncBtn = document.getElementById('sync-litellm-btn');
+  const syncMessageEl = document.getElementById('litellm-sync-message');
+
+  function setSyncMessage(text, isError) {
+    if (!syncMessageEl) return;
+    syncMessageEl.textContent = text || '';
+    syncMessageEl.classList.toggle('text-red-600', !!isError);
+    syncMessageEl.classList.toggle('text-gray-500', !isError);
+  }
+
+  syncBtn?.addEventListener('click', async () => {
+    syncBtn.disabled = true;
+    setSyncMessage('Syncing…', false);
+    try {
+      const res = await postJSON('/api/prices/sync-litellm', {});
+      if (!res.ok) {
+        setSyncMessage(await extractErrorMessage(res, 'Sync failed.'), true);
+        return;
+      }
+      const data = await res.json();
+      setSyncMessage(`Synced ${data.models.length} model(s): ${data.created} created, ${data.updated} updated.`, false);
+      loadPrices();
+    } finally {
+      syncBtn.disabled = false;
+    }
+  });
+
   loadPrices();
   initNavPolling();
 })();

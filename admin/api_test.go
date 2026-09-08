@@ -32,6 +32,14 @@ func newTestServer(t *testing.T) (*Server, *database.DB) {
 // HTTP surface.
 func newTestServerWithStatus(t *testing.T) (*Server, *database.DB, *status.Flag, *status.Fresh, *status.Fresh) {
 	t.Helper()
+	return newTestServerWithProxy(t, "https://api.anthropic.com", "")
+}
+
+// newTestServerWithProxy is newTestServerWithStatus with a caller-chosen
+// upstream, for tests (e.g. the LiteLLM sync) that need proxyBaseURL to
+// point at a local httptest.Server instead of the real Anthropic API.
+func newTestServerWithProxy(t *testing.T, proxyBaseURL, proxyAuthToken string) (*Server, *database.DB, *status.Flag, *status.Fresh, *status.Fresh) {
+	t.Helper()
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("database.Open: %v", err)
@@ -47,7 +55,7 @@ func newTestServerWithStatus(t *testing.T) (*Server, *database.DB, *status.Flag,
 	fresh := status.NewFresh()
 	limitersFresh := status.NewFresh()
 	tmpDir := t.TempDir()
-	s, err := NewServer(db, est, st, fresh, limitersFresh, "test", filepath.Join(tmpDir, "test.db"), tmpDir)
+	s, err := NewServer(db, est, st, fresh, limitersFresh, "test", filepath.Join(tmpDir, "test.db"), tmpDir, proxyBaseURL, proxyAuthToken)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -566,6 +574,63 @@ func TestUpdatePrice_CacheRatesOptional(t *testing.T) {
 	}
 	if p.CacheWritePerM != 2.5 || p.CacheReadPerM != 0.2 {
 		t.Errorf("cache rates were reset when omitted from the update, want preserved: %+v", p)
+	}
+}
+
+func TestSyncPricesFromLiteLLM_UpsertsAndReportsCounts(t *testing.T) {
+	litellmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[
+			{"model_name":"claude-sonnet-5","model_info":{"input_cost_per_token":0.0000022,"output_cost_per_token":0.000011}},
+			{"model_name":"brand-new-model","model_info":{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}}
+		]}`))
+	}))
+	defer litellmSrv.Close()
+
+	s, db, _, _, _ := newTestServerWithProxy(t, litellmSrv.URL, "sk-test")
+
+	// claude-sonnet-5 already exists among the seeded defaults, so it
+	// should be updated in place; brand-new-model has no existing row, so
+	// it should be created.
+	rec := doJSON(t, s, http.MethodPost, "/api/prices/sync-litellm", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp syncLiteLLMResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Created != 1 || resp.Updated != 1 {
+		t.Errorf("got created=%d updated=%d, want created=1 updated=1", resp.Created, resp.Updated)
+	}
+
+	prices, err := db.ListPrices(context.Background())
+	if err != nil {
+		t.Fatalf("ListPrices: %v", err)
+	}
+	var sonnet *database.Price
+	for i, p := range prices {
+		if p.Prefix == "claude-sonnet-5" && p.Rule == "over" && p.RuleTokens == 0 {
+			sonnet = &prices[i]
+		}
+	}
+	if sonnet == nil {
+		t.Fatal("expected an over-0 claude-sonnet-5 rule")
+	}
+	if sonnet.InputPerM != 2.2 || sonnet.OutputPerM != 11 {
+		t.Errorf("claude-sonnet-5 not synced: got (input=%v, output=%v), want (2.2, 11)", sonnet.InputPerM, sonnet.OutputPerM)
+	}
+}
+
+func TestSyncPricesFromLiteLLM_NonLiteLLMUpstreamIsBadGateway(t *testing.T) {
+	notLiteLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer notLiteLLM.Close()
+
+	s, _, _, _, _ := newTestServerWithProxy(t, notLiteLLM.URL, "")
+	rec := doJSON(t, s, http.MethodPost, "/api/prices/sync-litellm", nil)
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d for a non-LiteLLM upstream", rec.Code, http.StatusBadGateway)
 	}
 }
 

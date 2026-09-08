@@ -24,10 +24,17 @@
           model name returned by the API — changes apply only to new requests.
         </p>
       </div>
-      <button command="show-modal" commandfor="add-price-dialog"
-        class="shrink-0 text-white text-sm font-medium px-4 py-2 bg-emerald-600 rounded-md hover:bg-emerald-700">
-        + Add price
-      </button>
+      <div class="shrink-0 flex items-center gap-3">
+        <span id="litellm-sync-message" class="text-xs text-gray-500 max-w-xs text-right"></span>
+        <button id="sync-litellm-btn" type="button"
+          class="text-emerald-700 text-sm font-medium px-4 py-2 border border-emerald-600 rounded-md hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed">
+          Sync from LiteLLM
+        </button>
+        <button command="show-modal" commandfor="add-price-dialog"
+          class="text-white text-sm font-medium px-4 py-2 bg-emerald-600 rounded-md hover:bg-emerald-700">
+          + Add price
+        </button>
+      </div>
     </div>
 
     <!-- ── Prices Table ───────────────────────────────────────────────────── -->

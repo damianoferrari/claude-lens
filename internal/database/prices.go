@@ -130,3 +130,29 @@ func (db *DB) DeletePrice(ctx context.Context, id int64) error {
 	_, err := db.sql.ExecContext(ctx, "DELETE FROM model_prices WHERE id = ?", id)
 	return err
 }
+
+// UpsertPriceFromSync writes prefix's unconditional ("over 0") rule with
+// the given rates, creating it if it doesn't exist yet. Used to refresh a
+// model's base rate from an external source (see internal/litellm) without
+// touching any tiered rules an admin has added on top of it for the same
+// prefix.
+func (db *DB) UpsertPriceFromSync(ctx context.Context, prefix string, inputPerM, outputPerM, cacheWritePerM, cacheReadPerM, now float64) (created bool, err error) {
+	var id int64
+	err = db.sql.QueryRowContext(ctx,
+		`SELECT id FROM model_prices WHERE model_prefix = ? AND rule = 'over' AND rule_tokens = 0`, prefix,
+	).Scan(&id)
+	switch {
+	case err == sql.ErrNoRows:
+		_, err = db.CreatePrice(ctx, Price{
+			Prefix: prefix, Rule: "over", RuleTokens: 0,
+			InputPerM: inputPerM, OutputPerM: outputPerM,
+			CacheWritePerM: cacheWritePerM, CacheReadPerM: cacheReadPerM,
+			CreatedAt: now, UpdatedAt: now,
+		})
+		return true, err
+	case err != nil:
+		return false, err
+	default:
+		return false, db.UpdatePrice(ctx, id, inputPerM, outputPerM, cacheWritePerM, cacheReadPerM, now)
+	}
+}
