@@ -635,6 +635,22 @@ func TestSyncPricesFromLiteLLM_NonLiteLLMUpstreamIsBadGateway(t *testing.T) {
 	}
 }
 
+func TestSyncPricesFromLiteLLM_InternalErrorIsNot502(t *testing.T) {
+	litellmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"model_name":"m","model_info":{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}}]}`))
+	}))
+	defer litellmSrv.Close()
+
+	s, db, _, _, _ := newTestServerWithProxy(t, litellmSrv.URL, "")
+	db.Close() // fetch succeeds, but the subsequent upsert now fails with a DB error, not a reachability one.
+
+	rec := doJSON(t, s, http.MethodPost, "/api/prices/sync-litellm", nil)
+	if rec.Code == http.StatusBadGateway {
+		t.Errorf("status = %d, want anything but 502 — the UI greys out its sync button on 502, "+
+			"which a mere DB error shouldn't trigger", rec.Code)
+	}
+}
+
 func TestCreatePrice_RefreshesEstimatorImmediately(t *testing.T) {
 	s, db := newTestServer(t)
 	ctx := context.Background()

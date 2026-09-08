@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS settings (
     id                             INTEGER PRIMARY KEY CHECK (id = 1),
     litellm_sync_interval_minutes  INTEGER NOT NULL DEFAULT 60,
     litellm_last_synced_at         REAL    NOT NULL DEFAULT 0,
+    litellm_last_sync_error        TEXT    NOT NULL DEFAULT '',
     updated_at                     REAL    NOT NULL
 );
 `
@@ -152,6 +153,9 @@ var newColumns = map[string][]string{
 		"alert_threshold_pct INTEGER",
 		"alert_sent INTEGER NOT NULL DEFAULT 0",
 		"alert_request_cost_usd REAL",
+	},
+	"settings": {
+		"litellm_last_sync_error TEXT NOT NULL DEFAULT ''",
 	},
 }
 

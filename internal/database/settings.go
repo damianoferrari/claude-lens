@@ -23,7 +23,15 @@ type Settings struct {
 	// background) last completed successfully. Read-only from the admin
 	// API's perspective — see MarkLiteLLMSynced.
 	LiteLLMLastSyncedAt float64 `json:"litellm_last_synced_at"`
-	UpdatedAt           float64 `json:"updated_at"`
+	// LiteLLMLastSyncError is the error message from the most recent sync
+	// attempt (manual or background), or "" if that attempt succeeded (or
+	// none has ever run). Since every attempt overwrites it, a non-empty
+	// value always reflects current reachability, not a stale one-time
+	// failure — the admin UI uses it to grey out the manual sync button
+	// (see MarkLiteLLMSyncFailed) without ever needing a separate "is this
+	// even a LiteLLM proxy" probe.
+	LiteLLMLastSyncError string  `json:"litellm_last_sync_error"`
+	UpdatedAt            float64 `json:"updated_at"`
 }
 
 // seedDefaultSettings inserts the single settings row on a fresh database.
@@ -32,8 +40,8 @@ type Settings struct {
 func (db *DB) seedDefaultSettings(ctx context.Context) error {
 	now := float64(time.Now().Unix())
 	_, err := db.sql.ExecContext(ctx,
-		`INSERT INTO settings (id, litellm_sync_interval_minutes, litellm_last_synced_at, updated_at)
-		 VALUES (1, ?, 0, ?)
+		`INSERT INTO settings (id, litellm_sync_interval_minutes, litellm_last_synced_at, litellm_last_sync_error, updated_at)
+		 VALUES (1, ?, 0, '', ?)
 		 ON CONFLICT (id) DO NOTHING`,
 		defaultLiteLLMSyncIntervalMinutes, now,
 	)
@@ -44,14 +52,18 @@ func (db *DB) seedDefaultSettings(ctx context.Context) error {
 func (db *DB) GetSettings(ctx context.Context) (Settings, error) {
 	var s Settings
 	err := db.sql.QueryRowContext(ctx,
-		`SELECT litellm_sync_interval_minutes, litellm_last_synced_at, updated_at FROM settings WHERE id = 1`,
-	).Scan(&s.LiteLLMSyncIntervalMinutes, &s.LiteLLMLastSyncedAt, &s.UpdatedAt)
+		`SELECT litellm_sync_interval_minutes, litellm_last_synced_at, litellm_last_sync_error, updated_at FROM settings WHERE id = 1`,
+	).Scan(&s.LiteLLMSyncIntervalMinutes, &s.LiteLLMLastSyncedAt, &s.LiteLLMLastSyncError, &s.UpdatedAt)
 	return s, err
 }
 
 // UpdateLiteLLMSyncInterval sets how often (in minutes) RunLoop should
 // sync; 0 disables it. Takes effect on RunLoop's next poll (at most a
-// minute later), no restart needed.
+// minute later), no restart needed. Deliberately never gated by
+// LiteLLMLastSyncError: even when the upstream is currently unreachable,
+// this stays editable so an admin always has a way to trigger a fresh
+// attempt (set a short interval) without waiting on a UI element that a
+// past failure disabled.
 func (db *DB) UpdateLiteLLMSyncInterval(ctx context.Context, minutes int, updatedAt float64) error {
 	_, err := db.sql.ExecContext(ctx,
 		`UPDATE settings SET litellm_sync_interval_minutes = ?, updated_at = ? WHERE id = 1`,
@@ -60,11 +72,24 @@ func (db *DB) UpdateLiteLLMSyncInterval(ctx context.Context, minutes int, update
 	return err
 }
 
-// MarkLiteLLMSynced records that a LiteLLM price sync just completed,
-// whether triggered by the admin UI's button or by RunLoop's own schedule
-// — either way it resets RunLoop's staleness clock, so a manual sync
-// doesn't get immediately followed by a redundant scheduled one.
+// MarkLiteLLMSynced records that a LiteLLM price sync just completed
+// successfully, whether triggered by the admin UI's button or by RunLoop's
+// own schedule. Resets RunLoop's staleness clock (so a manual sync doesn't
+// get immediately followed by a redundant scheduled one) and clears any
+// previously recorded failure, since a success means the upstream is
+// reachable right now regardless of past attempts.
 func (db *DB) MarkLiteLLMSynced(ctx context.Context, at float64) error {
-	_, err := db.sql.ExecContext(ctx, `UPDATE settings SET litellm_last_synced_at = ? WHERE id = 1`, at)
+	_, err := db.sql.ExecContext(ctx,
+		`UPDATE settings SET litellm_last_synced_at = ?, litellm_last_sync_error = '' WHERE id = 1`, at,
+	)
+	return err
+}
+
+// MarkLiteLLMSyncFailed records that a LiteLLM price sync attempt failed —
+// e.g. the upstream isn't actually a LiteLLM proxy, or the configured token
+// can't call its /model/info route. Does not touch LiteLLMLastSyncedAt:
+// that field means "last successful sync", not "last attempt".
+func (db *DB) MarkLiteLLMSyncFailed(ctx context.Context, errMsg string) error {
+	_, err := db.sql.ExecContext(ctx, `UPDATE settings SET litellm_last_sync_error = ? WHERE id = 1`, errMsg)
 	return err
 }

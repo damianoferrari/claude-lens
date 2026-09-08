@@ -450,13 +450,31 @@ import { esc, extractErrorMessage, fmtInt, fmtTime, initNavPolling, makeDialogMe
     setSyncMessage(`${text}${suffix}`, isError);
   }
 
+  // Grays out the manual button once we *know* this upstream can't sync —
+  // driven by the last real attempt's outcome (manual or background, see
+  // database.MarkLiteLLMSyncFailed), not a separate capability probe. The
+  // interval input is deliberately never disabled here: RunLoop keeps
+  // retrying on schedule regardless, so it self-heals the button the next
+  // time settings are loaded, and the input stays a manual escape hatch
+  // (set a short interval to force a fresh attempt soon) even while the
+  // button itself is greyed out.
+  function applyLiteLLMAvailability(errorMsg) {
+    if (!syncBtn) return;
+    syncBtn.disabled = !!errorMsg;
+    if (errorMsg) {
+      syncMessageWithLastSynced(`LiteLLM sync unavailable: ${errorMsg}`, true);
+    } else {
+      syncMessageWithLastSynced('', false);
+    }
+  }
+
   async function loadSettings() {
     const res = await fetch('/api/settings');
     if (!res.ok || !syncIntervalInput) return;
     const settings = await res.json();
     syncIntervalInput.value = settings.litellm_sync_interval_minutes;
     lastSyncedAt = settings.litellm_last_synced_at;
-    syncMessageWithLastSynced('', false);
+    applyLiteLLMAvailability(settings.litellm_last_sync_error);
   }
 
   syncIntervalInput?.addEventListener('change', async () => {
@@ -476,10 +494,15 @@ import { esc, extractErrorMessage, fmtInt, fmtTime, initNavPolling, makeDialogMe
   syncBtn?.addEventListener('click', async () => {
     syncBtn.disabled = true;
     setSyncMessage('Syncing…', false);
+    // Only a 502 (see admin.syncPricesFromLiteLLM) means "this upstream
+    // isn't a LiteLLM proxy" — any other failure (e.g. a DB error) isn't a
+    // capability signal, so the button stays usable for an immediate retry.
+    let keepDisabled = false;
     try {
       const res = await postJSON('/api/prices/sync-litellm', {});
       if (!res.ok) {
         setSyncMessage(await extractErrorMessage(res, 'Sync failed.'), true);
+        keepDisabled = res.status === 502;
         return;
       }
       const data = await res.json();
@@ -487,7 +510,7 @@ import { esc, extractErrorMessage, fmtInt, fmtTime, initNavPolling, makeDialogMe
       syncMessageWithLastSynced(`Synced ${data.models.length} model(s): ${data.created} created, ${data.updated} updated.`, false);
       loadPrices();
     } finally {
-      syncBtn.disabled = false;
+      syncBtn.disabled = keepDisabled;
     }
   });
 

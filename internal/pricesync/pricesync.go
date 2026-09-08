@@ -7,6 +7,7 @@ package pricesync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -24,6 +25,16 @@ type Result struct {
 	Models  []string `json:"models"`
 }
 
+// ErrUpstreamUnavailable wraps a Sync failure that specifically means "this
+// upstream doesn't support LiteLLM sync at all" (the /model/info fetch
+// itself failed) — as opposed to some other failure further down Sync's
+// pipeline (e.g. a DB write error), which says nothing about whether the
+// upstream is reachable. Callers use errors.Is against this to decide
+// whether the failure is a genuine capability signal: the admin API maps
+// it to 502 (see admin.syncPricesFromLiteLLM), which the Prices page uses
+// to grey out its manual sync button.
+var ErrUpstreamUnavailable = errors.New("litellm upstream unavailable")
+
 // Sync pulls per-model rates from baseURL's LiteLLM /model/info endpoint
 // and upserts each model's unconditional ("over 0") price rule into db —
 // see database.UpsertPriceFromSync for why tiered rules are left alone —
@@ -31,11 +42,16 @@ type Result struct {
 // sync's completion time (see database.MarkLiteLLMSynced), so RunLoop's
 // staleness check doesn't immediately fire again right after. Returns an
 // error, without changing anything, if the fetch itself fails (e.g. baseURL
-// isn't a LiteLLM proxy).
+// isn't a LiteLLM proxy) — wrapped in ErrUpstreamUnavailable — and records
+// that failure via database.MarkLiteLLMSyncFailed regardless of whether
+// this call came from the admin UI's button or RunLoop's own schedule, so
+// the admin UI can grey out the button the moment *any* attempt establishes
+// the upstream doesn't support this at all, not just a scheduled one.
 func Sync(ctx context.Context, db *database.DB, est *pricing.Estimator, client *litellm.Client, baseURL, authToken string) (Result, error) {
-	prices, err := client.FetchModelPrices(ctx, baseURL, authToken)
-	if err != nil {
-		return Result{}, err
+	prices, fetchErr := client.FetchModelPrices(ctx, baseURL, authToken)
+	if fetchErr != nil {
+		_ = db.MarkLiteLLMSyncFailed(ctx, fetchErr.Error())
+		return Result{}, fmt.Errorf("%w: %v", ErrUpstreamUnavailable, fetchErr)
 	}
 
 	now := float64(time.Now().Unix())

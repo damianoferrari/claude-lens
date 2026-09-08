@@ -2,6 +2,7 @@ package pricesync
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -75,8 +76,12 @@ func TestSync_NonLiteLLMUpstreamReturnsErrorWithoutSideEffects(t *testing.T) {
 		t.Fatalf("ListPrices: %v", err)
 	}
 
-	if _, err := Sync(context.Background(), db, est, litellm.NewClient(), notLiteLLM.URL, ""); err == nil {
+	_, err = Sync(context.Background(), db, est, litellm.NewClient(), notLiteLLM.URL, "")
+	if err == nil {
 		t.Fatal("expected an error for a non-LiteLLM upstream")
+	}
+	if !errors.Is(err, ErrUpstreamUnavailable) {
+		t.Errorf("got %v, want an error wrapping ErrUpstreamUnavailable (the admin API and UI key off this)", err)
 	}
 
 	after, err := db.ListPrices(context.Background())
@@ -85,6 +90,70 @@ func TestSync_NonLiteLLMUpstreamReturnsErrorWithoutSideEffects(t *testing.T) {
 	}
 	if len(after) != len(before) {
 		t.Errorf("prices changed on a failed sync: before=%d after=%d", len(before), len(after))
+	}
+
+	settings, err := db.GetSettings(context.Background())
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if settings.LiteLLMLastSyncError == "" {
+		t.Error("Sync's failure wasn't recorded in LiteLLMLastSyncError")
+	}
+}
+
+func TestSync_SuccessClearsAPriorFailure(t *testing.T) {
+	notLiteLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer notLiteLLM.Close()
+	litellmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[]}`))
+	}))
+	defer litellmSrv.Close()
+
+	db := openTestDB(t)
+	est := pricing.New(db)
+	if err := est.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	if _, err := Sync(context.Background(), db, est, litellm.NewClient(), notLiteLLM.URL, ""); err == nil {
+		t.Fatal("expected the first sync (against a non-LiteLLM upstream) to fail")
+	}
+	if _, err := Sync(context.Background(), db, est, litellm.NewClient(), litellmSrv.URL, ""); err != nil {
+		t.Fatalf("expected the second sync (against a real LiteLLM upstream) to succeed: %v", err)
+	}
+
+	settings, err := db.GetSettings(context.Background())
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if settings.LiteLLMLastSyncError != "" {
+		t.Errorf("LiteLLMLastSyncError = %q, want cleared after the subsequent successful sync", settings.LiteLLMLastSyncError)
+	}
+}
+
+func TestSync_NonFetchFailureIsNotErrUpstreamUnavailable(t *testing.T) {
+	litellmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"model_name":"m","model_info":{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}}]}`))
+	}))
+	defer litellmSrv.Close()
+
+	db := openTestDB(t)
+	est := pricing.New(db)
+	if err := est.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	db.Close() // fetch succeeds, but the subsequent upsert now fails — a DB error, not a reachability one.
+
+	_, err := Sync(context.Background(), db, est, litellm.NewClient(), litellmSrv.URL, "")
+	if err == nil {
+		t.Fatal("expected an error once the DB is closed")
+	}
+	if errors.Is(err, ErrUpstreamUnavailable) {
+		t.Errorf("got %v wrapping ErrUpstreamUnavailable, want it reserved for fetch failures only — "+
+			"the admin API maps ErrUpstreamUnavailable to 502 specifically so the UI greys out its sync "+
+			"button, which a mere DB error shouldn't trigger", err)
 	}
 }
 

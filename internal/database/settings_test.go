@@ -17,6 +17,9 @@ func TestGetSettings_SeededOnFreshDB(t *testing.T) {
 	if s.LiteLLMLastSyncedAt != 0 {
 		t.Errorf("LiteLLMLastSyncedAt = %v, want 0 (never synced)", s.LiteLLMLastSyncedAt)
 	}
+	if s.LiteLLMLastSyncError != "" {
+		t.Errorf("LiteLLMLastSyncError = %q, want empty (no attempt yet)", s.LiteLLMLastSyncError)
+	}
 }
 
 func TestUpdateLiteLLMSyncInterval(t *testing.T) {
@@ -52,5 +55,49 @@ func TestMarkLiteLLMSynced(t *testing.T) {
 	// The sync interval itself must be untouched by a sync completing.
 	if s.LiteLLMSyncIntervalMinutes != defaultLiteLLMSyncIntervalMinutes {
 		t.Errorf("LiteLLMSyncIntervalMinutes changed to %d after MarkLiteLLMSynced", s.LiteLLMSyncIntervalMinutes)
+	}
+}
+
+func TestMarkLiteLLMSyncFailed(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if err := db.MarkLiteLLMSyncFailed(ctx, "model/info returned status 404"); err != nil {
+		t.Fatalf("MarkLiteLLMSyncFailed: %v", err)
+	}
+	s, err := db.GetSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if s.LiteLLMLastSyncError != "model/info returned status 404" {
+		t.Errorf("LiteLLMLastSyncError = %q, want the recorded error", s.LiteLLMLastSyncError)
+	}
+	// A failed attempt is not a successful sync — LiteLLMLastSyncedAt must
+	// stay at its prior value (0 here, nothing has ever succeeded).
+	if s.LiteLLMLastSyncedAt != 0 {
+		t.Errorf("LiteLLMLastSyncedAt = %v, want unchanged (0)", s.LiteLLMLastSyncedAt)
+	}
+}
+
+func TestMarkLiteLLMSynced_ClearsAPriorFailure(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if err := db.MarkLiteLLMSyncFailed(ctx, "some earlier failure"); err != nil {
+		t.Fatalf("MarkLiteLLMSyncFailed: %v", err)
+	}
+	if err := db.MarkLiteLLMSynced(ctx, 999); err != nil {
+		t.Fatalf("MarkLiteLLMSynced: %v", err)
+	}
+
+	s, err := db.GetSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if s.LiteLLMLastSyncError != "" {
+		t.Errorf("LiteLLMLastSyncError = %q, want cleared by a subsequent success", s.LiteLLMLastSyncError)
+	}
+	if s.LiteLLMLastSyncedAt != 999 {
+		t.Errorf("LiteLLMLastSyncedAt = %v, want 999", s.LiteLLMLastSyncedAt)
 	}
 }

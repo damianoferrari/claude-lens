@@ -341,10 +341,20 @@ func (h *handlers) createPrice(w http.ResponseWriter, r *http.Request) {
 // same sync also run periodically in the background (see main.go) — and
 // reports what it did so the admin UI can show a meaningful summary instead
 // of a bare "ok".
+//
+// Status code distinguishes the failure kind: 502 specifically means the
+// upstream isn't a LiteLLM proxy (see pricesync.ErrUpstreamUnavailable),
+// which the Prices page's JS uses to grey out the manual sync button —
+// anything else (e.g. a DB write error) isn't a capability signal, so it
+// stays a plain 500 and the button stays usable for an immediate retry.
 func (h *handlers) syncPricesFromLiteLLM(w http.ResponseWriter, r *http.Request) {
 	result, err := pricesync.Sync(r.Context(), h.db, h.est, h.litellmClient, h.proxyBaseURL, h.proxyAuthToken)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		status := http.StatusInternalServerError
+		if errors.Is(err, pricesync.ErrUpstreamUnavailable) {
+			status = http.StatusBadGateway
+		}
+		writeError(w, status, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
