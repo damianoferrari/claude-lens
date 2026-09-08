@@ -134,6 +134,34 @@ The SQLite database is created in `CLENS_DATA_DIR` (default `data/`) and is name
 
 Logs are written to `CLENS_LOG_DIR` (default `logs/`) in a rotating file named `claude-lens.log`. It rotates at 5MB and keeps 3 timestamped backups + 1 active log file - capping total log storage at 20MB.
 
+## Easy seeding
+
+You can seed rows into the database using:
+
+```sh
+claude-lens --feed --table table_name --row '{"column1":"value1","column2":"value2"}'
+```
+
+| CLI flag | Description |
+|---|---|
+| `--feed` | Enable feeding data into the database |
+| `--table` | Specify the table to insert the row into |
+| `--row` | JSON string representing the row to insert |
+
+### Examples
+
+Add price configuration:
+
+```sh
+claude-lens --feed --table model_prices --row '{"model_prefix": "claude-sonnet-5", "rule": "over", "rule_tokens": 0, "input_per_m": 3, "output_per_m": 15, "cache_write_per_m": 4, "cache_read_per_m": 0.2}'
+```
+
+Add limiter:
+
+```sh
+claude-lens --feed --table limiters --row '{"session_id": "", "limit_amount": 20, "refresh_value": 1, "refresh_unit": "days", "refresh_aligned": true}'
+```
+
 ## How it works
 
 ```mermaid
@@ -203,6 +231,12 @@ Create a `.env` file in the project root, based on `.env.example`, and fill in a
 
 ```sh
 cp .env.example .env
+```
+
+Checkout to `develop` branch.
+
+```sh
+git checkout develop
 ```
 
 ## Running
