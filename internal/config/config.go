@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Config holds all runtime configuration for both the proxy and admin servers.
@@ -19,6 +20,12 @@ type Config struct {
 	DataDir string
 	LogDir  string
 	DBPath  string
+
+	// LiteLLMSyncInterval is how often model_prices is refreshed from the
+	// upstream's LiteLLM /model/info endpoint (see internal/pricesync).
+	// Zero disables the background loop entirely — the admin UI's manual
+	// "Sync from LiteLLM" button still works either way.
+	LiteLLMSyncInterval time.Duration
 }
 
 const defaultAnthropicBaseURL = "https://api.anthropic.com"
@@ -39,6 +46,8 @@ func Load() (Config, error) {
 
 		DataDir: getEnv("CLENS_DATA_DIR", "data"),
 		LogDir:  getEnv("CLENS_LOG_DIR", "logs"),
+
+		LiteLLMSyncInterval: getEnvDuration("CLENS_LITELLM_SYNC_INTERVAL", 24*time.Hour),
 	}
 	cfg.DBPath = filepath.Join(cfg.DataDir, "claude-lens.db")
 
@@ -57,4 +66,19 @@ func getEnv(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// getEnvDuration parses name as a Go duration string (e.g. "24h", "30m").
+// "0" explicitly disables the feature it configures; an unset, empty, or
+// unparseable value falls back to fallback.
+func getEnvDuration(name string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fallback
+	}
+	return d
 }

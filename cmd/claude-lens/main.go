@@ -16,8 +16,10 @@ import (
 	"github.com/lfsc09/claude-lens/admin"
 	"github.com/lfsc09/claude-lens/internal/config"
 	"github.com/lfsc09/claude-lens/internal/database"
+	"github.com/lfsc09/claude-lens/internal/litellm"
 	"github.com/lfsc09/claude-lens/internal/logging"
 	"github.com/lfsc09/claude-lens/internal/notify"
+	"github.com/lfsc09/claude-lens/internal/pricesync"
 	"github.com/lfsc09/claude-lens/internal/pricing"
 	"github.com/lfsc09/claude-lens/internal/status"
 	"github.com/lfsc09/claude-lens/proxy"
@@ -83,7 +85,7 @@ func main() {
 
 	var proxyErr, adminErr error
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		// stop() also cancels ctx (see signal.NotifyContext), so if this
@@ -101,6 +103,10 @@ func main() {
 	go func() {
 		defer wg.Done()
 		db.RunLimiterRefreshLoop(ctx, limitersFresh)
+	}()
+	go func() {
+		defer wg.Done()
+		pricesync.RunLoop(ctx, db, est, litellm.NewClient(), cfg.AnthropicBaseURL, cfg.AnthropicAuthToken, cfg.LiteLLMSyncInterval)
 	}()
 
 	<-ctx.Done()
