@@ -1,9 +1,97 @@
-// Shared across every admin page: formatters, the [data-tip] tooltip
-// wiring, and the SSE client that drives the nav's "Proxy Service" badge
-// plus each page's own live-update hook.
+// Shared across every admin page: the <site-nav> Custom Element, formatters,
+// the [data-tip] tooltip wiring, and the SSE client that drives the nav's
+// "Proxy Service" badge plus each page's own live-update hook.
 'use strict';
 
 const txtEncoder = new TextEncoder();
+
+const NAV_LINK_ACTIVE = 'text-emerald-50 py-1 px-2 rounded-lg bg-emerald-700 shadow-md hover:shadow-emerald-700/50 transition';
+const NAV_LINK_INACTIVE = 'text-gray-600 hover:text-gray-900';
+
+/**
+ * Site-wide header/nav, shared by every admin page in place of duplicating
+ * the markup per page. Set the `active` attribute to highlight the current
+ * page: "dashboard" | "exchanges" | "analyze-exchange" | "prices" |
+ * "limiters" | "about". Renders into light DOM (no shadow root) so existing
+ * global code — updateProxyStatusBadge via getElementById('proxy-status') —
+ * keeps working unchanged, and so the Tailwind CDN's mutation observer picks
+ * up its utility classes the same way it does for every page's own
+ * dynamically-rendered markup.
+ */
+class SiteNav extends HTMLElement {
+  connectedCallback() {
+    const active = this.getAttribute('active');
+    const exchangesActive = active === 'exchanges' || active === 'analyze-exchange';
+    const linkClass = (key) => (key === active ? NAV_LINK_ACTIVE : NAV_LINK_INACTIVE);
+    const menuItemClass = (key) => (key === active
+      ? 'block text-emerald-700 font-semibold px-3 py-2 bg-emerald-50'
+      : 'block text-gray-600 hover:text-gray-900 px-3 py-2 hover:bg-gray-50');
+
+    this.innerHTML = `
+      <header class="px-6 py-3 bg-white border-b border-gray-200">
+        <nav class="flex items-center text-sm font-medium gap-6">
+          <span class="flex items-center gap-2">
+            <img src="/img/logo.png" alt="" class="h-6 w-6 rounded-md">
+            <span class="text-base font-bold text-gray-900">claude-lens</span>
+          </span>
+          <a href="/" class="${linkClass('dashboard')}">Dashboard</a>
+          <div class="relative">
+            <button type="button" id="exchanges-menu-button" aria-haspopup="true" aria-expanded="false" aria-controls="exchanges-menu" class="flex items-center gap-1 ${exchangesActive ? NAV_LINK_ACTIVE : NAV_LINK_INACTIVE}">
+              Exchanges
+              <svg id="exchanges-menu-chevron" class="h-3 w-3 transition-transform" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <path d="M2.5 4.5L6 8l3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+            <div id="exchanges-menu" role="menu" aria-labelledby="exchanges-menu-button" class="hidden absolute left-0 z-50 w-48 mt-2 py-1 bg-white rounded-lg border border-gray-200 shadow-lg">
+              <a href="/exchanges" role="menuitem" class="${menuItemClass('exchanges')}">All Exchanges</a>
+              <a href="/exchanges/analyze" role="menuitem" class="${menuItemClass('analyze-exchange')}">Analyze Exchange</a>
+            </div>
+          </div>
+          <a href="/prices" class="${linkClass('prices')}">Prices</a>
+          <a href="/limiters" class="${linkClass('limiters')}">Limiters</a>
+          <a href="/about" class="${linkClass('about')}">About</a>
+          <span id="proxy-status" class="text-xs text-gray-500 ml-auto px-2 py-1 border border-gray-300 border-dashed rounded-lg">Proxy Service</span>
+        </nav>
+      </header>
+    `;
+
+    this.menuButton = this.querySelector('#exchanges-menu-button');
+    this.menu = this.querySelector('#exchanges-menu');
+    this.chevron = this.querySelector('#exchanges-menu-chevron');
+    this.onDocumentClick = (e) => {
+      if (!this.contains(e.target)) this.closeMenu();
+    };
+    this.onDocumentKeydown = (e) => {
+      if (e.key === 'Escape') this.closeMenu();
+    };
+    this.menuButton.addEventListener('click', () => this.toggleMenu());
+    document.addEventListener('click', this.onDocumentClick);
+    document.addEventListener('keydown', this.onDocumentKeydown);
+  }
+
+  disconnectedCallback() {
+    document.removeEventListener('click', this.onDocumentClick);
+    document.removeEventListener('keydown', this.onDocumentKeydown);
+  }
+
+  toggleMenu() {
+    if (this.menu.classList.contains('hidden')) this.openMenu();
+    else this.closeMenu();
+  }
+
+  openMenu() {
+    this.menu.classList.remove('hidden');
+    this.menuButton.setAttribute('aria-expanded', 'true');
+    this.chevron.classList.add('rotate-180');
+  }
+
+  closeMenu() {
+    this.menu.classList.add('hidden');
+    this.menuButton.setAttribute('aria-expanded', 'false');
+    this.chevron.classList.remove('rotate-180');
+  }
+}
+customElements.define('site-nav', SiteNav);
 
 export function pad(n) {
   return String(n).padStart(2, '0');
@@ -466,6 +554,41 @@ export function putJSON(url, payload) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+}
+
+/**
+ * Prompts the browser to save text content as a local file, entirely
+ * client-side (no upload involved).
+ * @param {string} filename - Name for the downloaded file.
+ * @param {string} content - File content to write.
+ * @param {string} [mimeType='application/json'] - MIME type for the download.
+ */
+export function downloadTextFile(filename, content, mimeType = 'application/json') {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Copies text to the clipboard, flashing the trigger button's label to
+ * reflect success/failure before it reverts to idleLabel.
+ * @param {HTMLButtonElement} button - Button that triggered the copy.
+ * @param {string} text - Text to copy.
+ * @param {string} idleLabel - Label to restore once the flash ends.
+ */
+export async function copyTextToClipboard(button, text, idleLabel) {
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = 'Copied!';
+  } catch {
+    button.textContent = 'Failed';
+  } finally {
+    setTimeout(() => { button.textContent = idleLabel; }, 1500);
+  }
 }
 
 /**

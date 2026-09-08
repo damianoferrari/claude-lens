@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -601,11 +602,26 @@ func TestCreatePrice_RefreshesEstimatorImmediately(t *testing.T) {
 func TestStaticFrontend_PagesServed(t *testing.T) {
 	s, _ := newTestServer(t)
 
-	for _, path := range []string{"/", "/exchanges", "/exchanges/123", "/prices", "/favicon.ico", "/img/logo.png", "/js/app.js"} {
+	for _, path := range []string{"/", "/exchanges", "/exchanges/analyze", "/exchanges/123", "/prices", "/favicon.ico", "/img/logo.png", "/js/app.js"} {
 		rec := doGet(t, s, path)
 		if rec.Code != http.StatusOK {
 			t.Errorf("GET %s: status = %d, want 200", path, rec.Code)
 		}
+	}
+}
+
+// TestStaticFrontend_AnalyzeRouteWinsOverWildcard confirms /exchanges/analyze
+// serves analyze.html rather than being swallowed by the /exchanges/{id}
+// wildcard (which would also return 200, just for the wrong page).
+func TestStaticFrontend_AnalyzeRouteWinsOverWildcard(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	rec := doGet(t, s, "/exchanges/analyze")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /exchanges/analyze: status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Analyze Exchange") {
+		t.Error("GET /exchanges/analyze did not serve analyze.html")
 	}
 }
 

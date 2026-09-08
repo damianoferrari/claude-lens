@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title id="page-title">Exchange – claude-lens Admin</title>
+  <title>Analyze Exchange – claude-lens Admin</title>
   <link rel="icon" href="/favicon.ico">
   <script src="https://cdn.tailwindcss.com"></script>
   <script type="module" src="https://cdn.jsdelivr.net/npm/@andypf/json-viewer@2.8.0/dist/esm/index.min.js"></script>
@@ -13,28 +13,27 @@
 <body class="min-h-screen text-gray-800 bg-gray-50">
 
   <!-- ── Navigation ──────────────────────────────────────────────────── -->
-  <site-nav active="exchanges"></site-nav>
+  <site-nav active="analyze-exchange"></site-nav>
 
   <main class="max-w-7xl mx-auto px-6 py-8">
-    <div class="mb-5">
-      <a href="/exchanges" id="back-link" class="text-sm text-emerald-600 hover:underline">← Exchanges</a>
+    <h1 class="text-xl font-semibold mb-5">Analyze Exchange</h1>
+
+    <div id="dropzone" tabindex="0" role="button" aria-label="Load a request payload"
+      class="flex flex-col items-center justify-center gap-2 text-center border-2 border-dashed border-gray-300 rounded-lg bg-white py-16 px-6 cursor-pointer hover:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition">
+      <p class="text-gray-600 font-medium">Drop a <code class="font-mono text-xs">.json</code> request file, click to browse, or paste (Ctrl/Cmd+V) raw JSON</p>
+      <p class="text-xs text-gray-400">Nothing is uploaded anywhere — everything stays in this browser tab.</p>
+      <input type="file" id="dropzone-input" accept="application/json,.json" class="hidden">
     </div>
 
-    <div class="flex flex-col gap-6" id="exchange-content">
-      <p class="text-center text-gray-400 py-24">Loading…</p>
-    </div>
+    <p id="analyze-error" class="hidden mt-4 text-sm text-red-600"></p>
 
-    <div id="not-found-content" class="hidden text-center py-24">
-      <p class="text-5xl font-bold text-gray-200 mb-4">404</p>
-      <p class="text-gray-500 mb-6" id="not-found-message">Exchange not found.</p>
-      <a href="/exchanges" id="not-found-back-link" class="text-sm text-emerald-600 hover:underline">← Back to exchanges</a>
-    </div>
+    <div id="analyze-content" class="hidden flex-col gap-6 mt-6"></div>
   </main>
 
   <!-- ── Tooltip ─────────────────────────────────────────────────────────── -->
   <div id="app-tooltip" role="tooltip" class="whitespace-pre-line fixed z-50 max-w-xs text-white text-xs leading-snug px-2.5 py-1.5 rounded-md bg-gray-600 shadow-lg pointer-events-none opacity-0 transition-opacity duration-150"></div>
 
-  <script type="module" src="/js/exchange.js"></script>
+  <script type="module" src="/js/analyze.js"></script>
 </body>
 
 </html>

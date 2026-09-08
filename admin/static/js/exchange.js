@@ -1,4 +1,4 @@
-import { esc, estimateBytes, fmtBytes, fmtCost, fmtInt, initNavPolling, ruleText } from './app.js';
+import { copyTextToClipboard, downloadTextFile, esc, estimateBytes, fmtBytes, fmtCost, fmtInt, initNavPolling, ruleText } from './app.js';
 
 'use strict';
 
@@ -137,7 +137,8 @@ import { esc, estimateBytes, fmtBytes, fmtCost, fmtInt, initNavPolling, ruleText
           <div class="bg-white rounded-t-lg border border-gray-200 p-4 flex items-center justify-between">
             <div class="flex items-center gap-2">
               <h2 class="font-semibold uppercase tracking-wide">Request</h2>
-              <button type="button" id="request-copy-raw" class="px-2 py-1 rounded bg-gray-200 text-[.7rem] uppercase font-medium tracking-wide hover:bg-gray-300">Copy Raw</button>
+              <button type="button" id="request-copy-raw" class="text-xs uppercase font-medium tracking-wide px-2 py-1 rounded bg-gray-200 hover:bg-gray-300">Copy Raw</button>
+              <button type="button" id="request-download-raw" class="text-xs uppercase font-medium tracking-wide px-2 py-1 rounded bg-gray-200 hover:bg-gray-300">Download Raw</button>
             </div>
             <div class="flex flex-col gap-2 items-end">
               <span class="text-xs text-gray-700 font-mono">${fmtInt(exchange.raw_request_tokens)} tokens</span>
@@ -234,14 +235,19 @@ import { esc, estimateBytes, fmtBytes, fmtCost, fmtInt, initNavPolling, ruleText
   document.addEventListener('click', async (e) => {
     const trigger = e.target.closest('#request-copy-raw');
     if (!trigger || !derivedExchange?.raw_request) return;
+    await copyTextToClipboard(trigger, derivedExchange.raw_request, 'Copy Raw');
+  });
+
+  document.addEventListener('click', (e) => {
+    const trigger = e.target.closest('#request-download-raw');
+    if (!trigger || !derivedExchange?.raw_request) return;
+    let content = derivedExchange.raw_request;
     try {
-      await navigator.clipboard.writeText(derivedExchange.raw_request);
-      trigger.textContent = 'Copied!';
+      content = JSON.stringify(JSON.parse(content), null, 4);
     } catch {
-      trigger.textContent = 'Failed';
-    } finally {
-      setTimeout(() => { trigger.textContent = 'Copy Raw'; }, 1500);
+      // raw_request wasn't valid JSON; fall back to the original text.
     }
+    downloadTextFile(`exchange-${derivedExchange.id}-request.json`, content);
   });
 
   load();

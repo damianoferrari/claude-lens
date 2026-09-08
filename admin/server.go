@@ -48,7 +48,9 @@ func NewServer(db *database.DB, est *pricing.Estimator, st *status.Flag, fr *sta
 	// Static frontend: plain HTML/JS files, embedded above via staticFS.
 	// Pages are served under clean paths (no .html extension); only
 	// /exchanges/{id} needs an explicit handler since its id is a path
-	// variable, not a real file.
+	// variable, not a real file. /exchanges/analyze is a literal path under
+	// that same wildcard; ServeMux resolves the more specific literal match
+	// first, so both routes coexist without conflict.
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -57,6 +59,7 @@ func NewServer(db *database.DB, est *pricing.Estimator, st *status.Flag, fr *sta
 		http.ServeFileFS(w, r, staticContent, "dashboard.html")
 	})
 	mux.HandleFunc("GET /exchanges", servePage(staticContent, "exchanges.html"))
+	mux.HandleFunc("GET /exchanges/analyze", servePage(staticContent, "analyze.html"))
 	mux.HandleFunc("GET /exchanges/{id}", servePage(staticContent, "exchange.html"))
 	mux.HandleFunc("GET /prices", servePage(staticContent, "prices.html"))
 	mux.HandleFunc("GET /limiters", servePage(staticContent, "limiters.html"))

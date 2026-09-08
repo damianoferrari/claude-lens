@@ -12,20 +12,7 @@
 <body class="min-h-screen text-gray-800 bg-gray-50">
 
   <!-- ── Navigation ──────────────────────────────────────────────────── -->
-  <header class="px-6 py-3 bg-white border-b border-gray-200">
-    <nav class="flex items-center text-sm font-medium gap-6">
-      <span class="flex items-center gap-2">
-        <img src="/img/logo.png" alt="" class="h-6 w-6 rounded-md">
-        <span class="text-base font-bold text-gray-900">claude-lens</span>
-      </span>
-      <a href="/" class="text-gray-600 hover:text-gray-900">Dashboard</a>
-      <a href="/exchanges" class="py-1 px-2 rounded-lg bg-emerald-700 text-emerald-50 shadow-md hover:shadow-emerald-700/50 transition">Exchanges</a>
-      <a href="/prices" class="text-gray-600 hover:text-gray-900">Prices</a>
-      <a href="/limiters" class="text-gray-600 hover:text-gray-900">Limiters</a>
-      <a href="/about" class="text-gray-600 hover:text-gray-900">About</a>
-      <span id="proxy-status" class="text-xs text-gray-500 ml-auto px-2 py-1 border border-gray-300 border-dashed rounded-lg">Proxy Service</span>
-    </nav>
-  </header>
+  <site-nav active="exchanges"></site-nav>
 
   <main class="max-w-7xl mx-auto px-6 py-8">
     <div class="flex items-center justify-between mb-6">
