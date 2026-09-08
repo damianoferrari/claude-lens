@@ -127,7 +127,6 @@ They all must be set in OS environment. The `.env` file is only read in developm
 | `CLENS_ADMIN_ADDR` | `:7802` | Admin server listen address. |
 | `CLENS_DATA_DIR` | `data` | Where the SQLite database is created. |
 | `CLENS_LOG_DIR` | `logs` | Where the rotating log file is written (5MB × 3 backups). |
-| `CLENS_LITELLM_SYNC_INTERVAL` | `24h` | How often model prices are refreshed from the upstream's LiteLLM `/model/info` endpoint. `0` disables the background sync (the admin UI's manual "Sync from LiteLLM" button is unaffected). No-op if the upstream isn't a LiteLLM proxy. |
 
 ## Data and Logs
 

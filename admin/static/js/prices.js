@@ -440,6 +440,39 @@ import { esc, extractErrorMessage, fmtInt, fmtTime, initNavPolling, makeDialogMe
     syncMessageEl.classList.toggle('text-gray-500', !isError);
   }
 
+  // ── Auto-sync interval (persisted in the DB, not an env var, so it
+  // applies live — see internal/pricesync.RunLoop) ──────────────────────
+  const syncIntervalInput = document.getElementById('litellm-sync-interval');
+  let lastSyncedAt = 0;
+
+  function syncMessageWithLastSynced(text, isError) {
+    const suffix = lastSyncedAt ? ` (last synced ${fmtTime(lastSyncedAt)})` : '';
+    setSyncMessage(`${text}${suffix}`, isError);
+  }
+
+  async function loadSettings() {
+    const res = await fetch('/api/settings');
+    if (!res.ok || !syncIntervalInput) return;
+    const settings = await res.json();
+    syncIntervalInput.value = settings.litellm_sync_interval_minutes;
+    lastSyncedAt = settings.litellm_last_synced_at;
+    syncMessageWithLastSynced('', false);
+  }
+
+  syncIntervalInput?.addEventListener('change', async () => {
+    const minutes = parseInt(syncIntervalInput.value, 10);
+    if (Number.isNaN(minutes) || minutes < 0) {
+      setSyncMessage('Enter a whole number of minutes (0 or more).', true);
+      return;
+    }
+    const res = await putJSON('/api/settings', { litellm_sync_interval_minutes: minutes });
+    if (!res.ok) {
+      setSyncMessage(await extractErrorMessage(res, 'Failed to save interval.'), true);
+      return;
+    }
+    setSyncMessage(minutes === 0 ? 'Auto-sync disabled.' : `Auto-syncing every ${minutes} min.`, false);
+  });
+
   syncBtn?.addEventListener('click', async () => {
     syncBtn.disabled = true;
     setSyncMessage('Syncing…', false);
@@ -450,7 +483,8 @@ import { esc, extractErrorMessage, fmtInt, fmtTime, initNavPolling, makeDialogMe
         return;
       }
       const data = await res.json();
-      setSyncMessage(`Synced ${data.models.length} model(s): ${data.created} created, ${data.updated} updated.`, false);
+      lastSyncedAt = Math.floor(Date.now() / 1000);
+      syncMessageWithLastSynced(`Synced ${data.models.length} model(s): ${data.created} created, ${data.updated} updated.`, false);
       loadPrices();
     } finally {
       syncBtn.disabled = false;
@@ -458,5 +492,6 @@ import { esc, extractErrorMessage, fmtInt, fmtTime, initNavPolling, makeDialogMe
   });
 
   loadPrices();
+  loadSettings();
   initNavPolling();
 })();

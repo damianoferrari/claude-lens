@@ -106,7 +106,7 @@ func main() {
 	}()
 	go func() {
 		defer wg.Done()
-		pricesync.RunLoop(ctx, db, est, litellm.NewClient(), cfg.AnthropicBaseURL, cfg.AnthropicAuthToken, cfg.LiteLLMSyncInterval)
+		pricesync.RunLoop(ctx, db, est, litellm.NewClient(), cfg.AnthropicBaseURL, cfg.AnthropicAuthToken)
 	}()
 
 	<-ctx.Done()

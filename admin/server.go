@@ -93,6 +93,8 @@ func NewServer(db *database.DB, est *pricing.Estimator, st *status.Flag, fr *sta
 	mux.HandleFunc("PATCH /api/limiters/{id}/active", h.setLimiterActive)
 	mux.HandleFunc("DELETE /api/limiters/{id}", h.deleteLimiter)
 	mux.HandleFunc("GET /api/about", h.about)
+	mux.HandleFunc("GET /api/settings", h.getSettings)
+	mux.HandleFunc("PUT /api/settings", h.updateSettings)
 
 	handler := chain(mux, recoverMiddleware, loggingMiddleware(logger))
 	return &Server{handler: handler, logger: logger}, nil
