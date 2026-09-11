@@ -144,8 +144,26 @@ import { esc, extractErrorMessage, fmtCost, fmtTime, initNavPolling, makeDialogM
   });
 
   // ── Sync from LiteLLM ─────────────────────────────────────────────────
+  const syncMenu = document.getElementById('sync-litellm-menu');
+  const syncToggle = document.getElementById('sync-litellm-toggle');
+  const syncPanel = document.getElementById('sync-litellm-panel');
+  const syncChevron = document.getElementById('sync-litellm-chevron');
   const syncBtn = document.getElementById('sync-litellm-btn');
   const syncMessageEl = document.getElementById('litellm-sync-message');
+
+  function toggleSyncPanel(open = syncPanel.classList.contains('hidden')) {
+    syncPanel.classList.toggle('hidden', !open);
+    syncToggle.setAttribute('aria-expanded', String(open));
+    syncChevron.classList.toggle('rotate-180', open);
+  }
+
+  syncToggle?.addEventListener('click', () => toggleSyncPanel());
+  document.addEventListener('click', (e) => {
+    if (!syncPanel.classList.contains('hidden') && !syncMenu.contains(e.target)) toggleSyncPanel(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !syncPanel.classList.contains('hidden')) toggleSyncPanel(false);
+  });
 
   function setSyncMessage(text, isError) {
     if (!syncMessageEl) return;

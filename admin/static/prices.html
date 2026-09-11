@@ -19,17 +19,31 @@
     <div class="flex items-start justify-between gap-4 mb-4">
       <h1 class="text-xl font-semibold">Model prices</h1>
       <div class="shrink-0 flex items-center gap-3">
-        <div class="flex items-center gap-1.5">
-          <label for="litellm-sync-interval" class="text-xs text-gray-500 whitespace-nowrap">Auto-sync every</label>
-          <input type="number" id="litellm-sync-interval" min="0" step="1" placeholder="60"
-            class="w-16 text-sm px-2 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
-          <span class="text-xs text-gray-500 whitespace-nowrap">min (0 = off)</span>
+        <div id="sync-litellm-menu" class="relative">
+          <div class="inline-flex items-stretch rounded-md border border-emerald-600 overflow-hidden">
+            <button id="sync-litellm-btn" type="button"
+              class="text-emerald-700 text-sm font-medium px-4 py-2 hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed">
+              Sync from LiteLLM
+            </button>
+            <button id="sync-litellm-toggle" type="button" aria-haspopup="true" aria-expanded="false"
+              aria-controls="sync-litellm-panel" aria-label="Auto-sync settings"
+              class="px-2 border-l border-emerald-600 text-emerald-700 hover:bg-emerald-50">
+              <svg id="sync-litellm-chevron" class="h-3 w-3 transition-transform" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <path d="M2.5 4.5L6 8l3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          </div>
+          <div id="sync-litellm-panel"
+            class="hidden absolute right-0 z-10 mt-2 w-72 flex flex-col gap-3 p-4 bg-white border border-gray-200 rounded-lg shadow-lg">
+            <div class="flex items-center gap-1.5">
+              <label for="litellm-sync-interval" class="text-xs text-gray-500 whitespace-nowrap">Auto-sync every</label>
+              <input type="number" id="litellm-sync-interval" min="0" step="1" placeholder="60"
+                class="w-16 text-sm px-2 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
+              <span class="text-xs text-gray-500 whitespace-nowrap">min (0 = off)</span>
+            </div>
+            <p id="litellm-sync-message" class="text-xs text-gray-500"></p>
+          </div>
         </div>
-        <span id="litellm-sync-message" class="text-xs text-gray-500 max-w-xs text-right"></span>
-        <button id="sync-litellm-btn" type="button"
-          class="text-emerald-700 text-sm font-medium px-4 py-2 border border-emerald-600 rounded-md hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed">
-          Sync from LiteLLM
-        </button>
         <button command="show-modal" commandfor="price-dialog" id="add-price-btn"
           class="text-white text-sm font-medium px-4 py-2 bg-emerald-600 rounded-md hover:bg-emerald-700">
           + Add price
