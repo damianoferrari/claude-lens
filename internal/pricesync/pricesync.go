@@ -49,13 +49,14 @@ var ErrUpstreamUnavailable = errors.New("litellm upstream unavailable")
 // the admin UI can grey out the button the moment *any* attempt establishes
 // the upstream doesn't support this at all, not just a scheduled one.
 func Sync(ctx context.Context, db *database.DB, est *pricing.Estimator, client *litellm.Client, baseURL, authToken string) (Result, error) {
+	now := float64(time.Now().Unix())
+
 	prices, fetchErr := client.FetchModelPrices(ctx, baseURL, authToken)
 	if fetchErr != nil {
-		_ = db.MarkLiteLLMSyncFailed(ctx, fetchErr.Error())
+		_ = db.MarkLiteLLMSyncFailed(ctx, fetchErr.Error(), now)
 		return Result{}, fmt.Errorf("%w: %v", ErrUpstreamUnavailable, fetchErr)
 	}
 
-	now := float64(time.Now().Unix())
 	result := Result{Models: make([]string, 0, len(prices))}
 	for _, p := range prices {
 		created, err := db.UpsertPriceFromSync(ctx, p.ModelName, p.InputPerM, p.OutputPerM, p.CacheWritePerM, p.CacheReadPerM,
@@ -86,14 +87,29 @@ func Sync(ctx context.Context, db *database.DB, est *pricing.Estimator, client *
 // fresh install) takes effect.
 const pollInterval = time.Minute
 
+// syncDue reports whether settings.LiteLLMSyncIntervalMinutes has elapsed
+// since the later of LiteLLMLastSyncedAt and LiteLLMLastAttemptAt, as of
+// now. Always false when the interval is 0 (auto-sync disabled).
+func syncDue(settings database.Settings, now time.Time) bool {
+	if settings.LiteLLMSyncIntervalMinutes <= 0 {
+		return false
+	}
+	lastAttempt := max(settings.LiteLLMLastSyncedAt, settings.LiteLLMLastAttemptAt)
+	due := time.Unix(int64(lastAttempt), 0).
+		Add(time.Duration(settings.LiteLLMSyncIntervalMinutes) * time.Minute)
+	return !now.Before(due)
+}
+
 // RunLoop checks db.Settings every pollInterval and fires a Sync whenever
-// LiteLLMSyncIntervalMinutes has elapsed since LiteLLMLastSyncedAt —
-// including immediately, on a fresh database (LiteLLMLastSyncedAt is 0) or
-// one restarted after the interval already lapsed. An interval of 0
-// disables the loop entirely, checked fresh on every poll so an admin
-// toggling it via the UI takes effect within a minute, no restart needed.
-// The admin UI's manual "Sync from LiteLLM" button is wired separately and
-// unaffected either way.
+// LiteLLMSyncIntervalMinutes has elapsed since the later of
+// LiteLLMLastSyncedAt and LiteLLMLastAttemptAt — including immediately, on
+// a fresh database (both are 0) or one restarted after the interval already
+// lapsed. Using the last attempt rather than just the last success means a
+// run of failures still retries once per interval, not on every poll. An
+// interval of 0 disables the loop entirely, checked fresh on every poll so
+// an admin toggling it via the UI takes effect within a minute, no restart
+// needed. The admin UI's manual "Sync from LiteLLM" button is wired
+// separately and unaffected either way.
 //
 // Failures are logged, not propagated: this runs unconditionally whether or
 // not the configured upstream is actually a LiteLLM proxy, so a direct-
@@ -108,12 +124,7 @@ func RunLoop(ctx context.Context, db *database.DB, est *pricing.Estimator, clien
 			logger.Warn("read settings", "error", err)
 			return
 		}
-		if settings.LiteLLMSyncIntervalMinutes <= 0 {
-			return
-		}
-		due := time.Unix(int64(settings.LiteLLMLastSyncedAt), 0).
-			Add(time.Duration(settings.LiteLLMSyncIntervalMinutes) * time.Minute)
-		if time.Now().Before(due) {
+		if !syncDue(settings, time.Now()) {
 			return
 		}
 

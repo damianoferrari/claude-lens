@@ -157,6 +157,79 @@ func TestSync_NonFetchFailureIsNotErrUpstreamUnavailable(t *testing.T) {
 	}
 }
 
+func TestSyncDue(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name     string
+		settings database.Settings
+		want     bool
+	}{
+		{
+			name:     "fresh database is immediately due",
+			settings: database.Settings{LiteLLMSyncIntervalMinutes: 60},
+			want:     true,
+		},
+		{
+			name: "recent success is not due",
+			settings: database.Settings{
+				LiteLLMSyncIntervalMinutes: 60,
+				LiteLLMLastSyncedAt:        float64(now.Add(-30 * time.Minute).Unix()),
+			},
+			want: false,
+		},
+		{
+			name: "success past the interval is due again",
+			settings: database.Settings{
+				LiteLLMSyncIntervalMinutes: 60,
+				LiteLLMLastSyncedAt:        float64(now.Add(-61 * time.Minute).Unix()),
+			},
+			want: true,
+		},
+		{
+			name: "recent failure is not due",
+			settings: database.Settings{
+				LiteLLMSyncIntervalMinutes: 60,
+				LiteLLMLastAttemptAt:       float64(now.Add(-1 * time.Minute).Unix()),
+			},
+			want: false,
+		},
+		{
+			name: "failure past the interval is due again",
+			settings: database.Settings{
+				LiteLLMSyncIntervalMinutes: 60,
+				LiteLLMLastAttemptAt:       float64(now.Add(-61 * time.Minute).Unix()),
+			},
+			want: true,
+		},
+		{
+			name: "a more recent failure than the last success still blocks retry",
+			settings: database.Settings{
+				LiteLLMSyncIntervalMinutes: 60,
+				LiteLLMLastSyncedAt:        float64(now.Add(-120 * time.Minute).Unix()),
+				LiteLLMLastAttemptAt:       float64(now.Add(-1 * time.Minute).Unix()),
+			},
+			want: false,
+		},
+		{
+			name: "zero interval is never due",
+			settings: database.Settings{
+				LiteLLMSyncIntervalMinutes: 0,
+				LiteLLMLastAttemptAt:       float64(now.Add(-24 * time.Hour).Unix()),
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := syncDue(tt.settings, now); got != tt.want {
+				t.Errorf("syncDue(%+v) = %v, want %v", tt.settings, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunLoop_SyncsImmediatelyWhenDueThenStopsOnCancel(t *testing.T) {
 	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

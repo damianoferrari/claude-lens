@@ -62,7 +62,7 @@ func TestMarkLiteLLMSyncFailed(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 
-	if err := db.MarkLiteLLMSyncFailed(ctx, "model/info returned status 404"); err != nil {
+	if err := db.MarkLiteLLMSyncFailed(ctx, "model/info returned status 404", 555); err != nil {
 		t.Fatalf("MarkLiteLLMSyncFailed: %v", err)
 	}
 	s, err := db.GetSettings(ctx)
@@ -77,13 +77,18 @@ func TestMarkLiteLLMSyncFailed(t *testing.T) {
 	if s.LiteLLMLastSyncedAt != 0 {
 		t.Errorf("LiteLLMLastSyncedAt = %v, want unchanged (0)", s.LiteLLMLastSyncedAt)
 	}
+	// The attempt clock must advance regardless, so RunLoop waits a full
+	// interval before retrying instead of firing on every poll.
+	if s.LiteLLMLastAttemptAt != 555 {
+		t.Errorf("LiteLLMLastAttemptAt = %v, want 555", s.LiteLLMLastAttemptAt)
+	}
 }
 
 func TestMarkLiteLLMSynced_ClearsAPriorFailure(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 
-	if err := db.MarkLiteLLMSyncFailed(ctx, "some earlier failure"); err != nil {
+	if err := db.MarkLiteLLMSyncFailed(ctx, "some earlier failure", 100); err != nil {
 		t.Fatalf("MarkLiteLLMSyncFailed: %v", err)
 	}
 	if err := db.MarkLiteLLMSynced(ctx, 999); err != nil {
@@ -99,5 +104,8 @@ func TestMarkLiteLLMSynced_ClearsAPriorFailure(t *testing.T) {
 	}
 	if s.LiteLLMLastSyncedAt != 999 {
 		t.Errorf("LiteLLMLastSyncedAt = %v, want 999", s.LiteLLMLastSyncedAt)
+	}
+	if s.LiteLLMLastAttemptAt != 999 {
+		t.Errorf("LiteLLMLastAttemptAt = %v, want 999 (a success is also an attempt)", s.LiteLLMLastAttemptAt)
 	}
 }
