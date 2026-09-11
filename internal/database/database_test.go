@@ -680,10 +680,11 @@ func TestDeleteExchanges_LedgerSurvives(t *testing.T) {
 
 // TestMigrateModelPricesToUniquePrefix verifies that the tiered rule-shaped
 // model_prices table collapses to one row per prefix: a prefix with an
-// unconditional "over 0" rule keeps that row, while a prefix with only
+// unconditional "over 0" rule keeps that row, a prefix with only
 // non-conforming tiered rules (e.g. an admin deleted the base rule but kept
 // a custom one) falls back to its smallest rule_tokens row instead of
-// losing pricing entirely.
+// losing pricing entirely, and a prefix with duplicate "over 0" rows (never
+// prevented by the old schema) still collapses to exactly one row.
 func TestMigrateModelPricesToUniquePrefix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy-rules.db")
 
@@ -708,6 +709,10 @@ INSERT INTO model_prices (model_prefix, rule, rule_tokens, input_per_m, output_p
 VALUES ('claude-opus-5', 'under', 500000, 20.0, 100.0, 200, 200);
 INSERT INTO model_prices (model_prefix, rule, rule_tokens, input_per_m, output_per_m, created_at, updated_at)
 VALUES ('claude-opus-5', 'over', 500000, 40.0, 200.0, 200, 200);
+INSERT INTO model_prices (model_prefix, rule, rule_tokens, input_per_m, output_per_m, created_at, updated_at)
+VALUES ('claude-haiku-4', 'over', 0, 1.0, 5.0, 300, 300);
+INSERT INTO model_prices (model_prefix, rule, rule_tokens, input_per_m, output_per_m, created_at, updated_at)
+VALUES ('claude-haiku-4', 'over', 0, 2.0, 10.0, 300, 300);
 `
 	setupDB, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
@@ -756,6 +761,14 @@ VALUES ('claude-opus-5', 'over', 500000, 40.0, 200.0, 200, 200);
 	}
 	if opus.InputPerM != 20.0 || opus.OutputPerM != 100.0 {
 		t.Errorf("claude-opus-5 = %+v, want the smallest-rule_tokens fallback row (20.0/100.0)", opus)
+	}
+
+	haiku, ok := byPrefix["claude-haiku-4"]
+	if !ok {
+		t.Fatal("claude-haiku-4 missing after migration")
+	}
+	if haiku.InputPerM != 1.0 || haiku.OutputPerM != 5.0 {
+		t.Errorf("claude-haiku-4 = %+v, want the lowest-id 'over 0' row (1.0/5.0) among duplicates", haiku)
 	}
 }
 

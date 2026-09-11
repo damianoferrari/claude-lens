@@ -254,10 +254,12 @@ func migrateModelPricesToRules(ctx context.Context, sqlDB *sql.DB) error {
 // a very old DB.
 //
 // For each prefix, the kept row is its unconditional "over 0" rule if one
-// exists, else the row with the smallest rule_tokens (tie-broken by lowest
-// id) so a prefix's pricing is never lost outright. Any other tiered rule a
-// prefix owned is discarded — above-200k overrides start unset and are
-// populated afterward by a LiteLLM sync or manual admin entry.
+// exists, else the row with the smallest rule_tokens; ties (including
+// duplicate "over 0" rows, which the old schema never prevented) are broken
+// by lowest id, so a prefix's pricing is never lost outright and exactly one
+// row survives per prefix. Any other tiered rule a prefix owned is
+// discarded — above-200k overrides start unset and are populated afterward
+// by a LiteLLM sync or manual admin entry.
 func migrateModelPricesToUniquePrefix(ctx context.Context, sqlDB *sql.DB) error {
 	cols, err := tableColumns(ctx, sqlDB, "model_prices")
 	if err != nil {
@@ -290,29 +292,24 @@ func migrateModelPricesToUniquePrefix(ctx context.Context, sqlDB *sql.DB) error 
 		)`); err != nil {
 		return fmt.Errorf("create model_prices_new: %w", err)
 	}
+	// A prefix's kept row is picked by ordering candidates
+	// (unconditional "over 0" rule first, then smallest rule_tokens, then
+	// lowest id) and taking the first — a single deterministic row per
+	// prefix even if a prefix owned duplicate "over 0" rows, which the old
+	// schema never prevented.
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO model_prices_new
 		    (model_prefix, input_per_m, output_per_m, cache_write_per_m, cache_read_per_m, created_at, updated_at)
 		SELECT model_prefix, input_per_m, output_per_m, cache_write_per_m, cache_read_per_m, created_at, updated_at
-		FROM model_prices
-		WHERE id IN (
-		    SELECT id FROM model_prices AS p
-		    WHERE rule = 'over' AND rule_tokens = 0
-
-		    UNION ALL
-
-		    SELECT id FROM model_prices AS p
-		    WHERE NOT EXISTS (
-		        SELECT 1 FROM model_prices AS base
-		        WHERE base.model_prefix = p.model_prefix AND base.rule = 'over' AND base.rule_tokens = 0
-		    )
-		    AND p.rule_tokens = (
-		        SELECT MIN(rule_tokens) FROM model_prices AS m WHERE m.model_prefix = p.model_prefix
-		    )
-		    AND p.id = (
-		        SELECT MIN(id) FROM model_prices AS m
-		        WHERE m.model_prefix = p.model_prefix AND m.rule_tokens = p.rule_tokens
-		    )
+		FROM model_prices AS p
+		WHERE p.id = (
+		    SELECT m.id FROM model_prices AS m
+		    WHERE m.model_prefix = p.model_prefix
+		    ORDER BY
+		        CASE WHEN m.rule = 'over' AND m.rule_tokens = 0 THEN 0 ELSE 1 END,
+		        m.rule_tokens,
+		        m.id
+		    LIMIT 1
 		)`); err != nil {
 		return fmt.Errorf("copy model_prices rows: %w", err)
 	}
