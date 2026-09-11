@@ -37,18 +37,20 @@ import { esc, extractErrorMessage, fmtCost, fmtTime, initNavPolling, makeDialogM
       <div class="flex items-start justify-between gap-2 mb-3">
         <p class="font-mono text-sm font-medium break-all">${esc(p.model_prefix)}</p>
         <div class="shrink-0 flex items-center gap-2">
-          <button type="button" command="show-modal" commandfor="price-dialog" class="edit-btn text-xs text-gray-400 hover:text-gray-700">Edit</button>
-          <button type="button" class="delete-btn text-xs text-gray-400 hover:text-red-600">Delete</button>
+          <button type="button" command="show-modal" commandfor="price-dialog" class="edit-btn text-sm text-gray-400 hover:text-gray-700">Edit</button>
+          <button type="button" class="delete-btn text-sm text-gray-400 hover:text-red-600">Delete</button>
         </div>
       </div>
-      <div class="text-xs grid grid-cols-2 gap-y-1">
+      <div class="text-sm grid grid-cols-2 gap-y-1">
         <div class="flex justify-between pr-2"><span class="text-gray-500">Input $/M</span><span class="font-mono text-gray-700">${fmtCost(p.input_per_m)}</span></div>
         <div class="flex justify-between pl-2"><span class="text-gray-500">Output $/M</span><span class="font-mono text-gray-700">${fmtCost(p.output_per_m)}</span></div>
         <div class="flex justify-between pr-2"><span class="text-gray-500">Cache write $/M</span><span class="font-mono text-gray-700">${fmtCost(p.cache_write_per_m)}</span></div>
         <div class="flex justify-between pl-2"><span class="text-gray-500">Cache read $/M</span><span class="font-mono text-gray-700">${fmtCost(p.cache_read_per_m)}</span></div>
       </div>
       ${above200kSectionHtml(p)}
-      <p class="text-[11px] text-gray-400 mt-3">Updated ${fmtTime(p.updated_at)}</p>
+      <div class="mt-5 flex justify-end">
+        <p class="text-xs text-gray-400">Updated ${fmtTime(p.updated_at)}</p>
+      </div>
     </article>`;
   }
 
