@@ -33,6 +33,36 @@ import { copyTextToClipboard, downloadTextFile, esc, estimateBytes, fmtBytes, fm
     return exchange;
   }
 
+  const ABOVE_200K_TOKENS = 200_000;
+  const ABOVE_200K_FIELDS = [
+    ['input_per_m_above_200k', 'Input $/M (above 200k)'],
+    ['output_per_m_above_200k', 'Output $/M (above 200k)'],
+    ['cache_write_per_m_above_200k', 'Cache write $/M (above 200k)'],
+    ['cache_read_per_m_above_200k', 'Cache read $/M (above 200k)'],
+  ];
+
+  /**
+   * Renders a row for each above-200k override present on the exchange's
+   * frozen price snapshot (absent on pre-migration snapshots, which never
+   * had tier columns). Whether the tier actually applied to this exchange
+   * is derived from its own token counts rather than stored on the
+   * snapshot, since the 200k threshold is a fixed constant.
+   */
+  function above200kRowsHtml(exchange) {
+    const price = exchange.matched_price;
+    const rows = ABOVE_200K_FIELDS.filter(([field]) => price[field] != null);
+    if (!rows.length) return '';
+    const applied = exchange.raw_request_tokens > ABOVE_200K_TOKENS;
+    return rows.map(([field, label]) => `
+      <tr class="*:p-3">
+        <td class="font-medium uppercase tracking-wide text-gray-500">${esc(label)}</td>
+        <td class="font-mono text-gray-700 break-all text-right">
+          ${fmtCost(price[field])}
+          ${applied ? '<span class="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 align-middle">applied</span>' : ''}
+        </td>
+      </tr>`).join('');
+  }
+
   function render(exchange) {
     document.getElementById('page-title').textContent = `Exchange #${exchange.id} – claude-lens Admin`;
 
@@ -89,8 +119,8 @@ import { copyTextToClipboard, downloadTextFile, esc, estimateBytes, fmtBytes, fm
                 <tr class="*:p-3">
                   <td colspan="2" class="bg-gray-50">
                     <div class="flex items-center gap-1.5">
-                      <p class="font-medium uppercase tracking-wide text-gray-500">Matched price rule</p>
-                      <span class="text-xs text-gray-400" data-tip="Captured when this exchange was saved — a permanent snapshot of what was actually charged, even if the rule is edited or deleted later.">ⓘ</span>
+                      <p class="font-medium uppercase tracking-wide text-gray-500">Matched price</p>
+                      <span class="text-xs text-gray-400" data-tip="Captured when this exchange was saved — a permanent snapshot of what was actually charged, even if the price is edited or deleted later.">ⓘ</span>
                     </div>
                   </td>
                 </tr>
@@ -98,10 +128,12 @@ import { copyTextToClipboard, downloadTextFile, esc, estimateBytes, fmtBytes, fm
                   <td class="font-medium uppercase tracking-wide text-gray-500">Prefix</td>
                   <td class="font-mono text-gray-700 break-all text-right">${esc(exchange.matched_price.model_prefix)}</td>
                 </tr>
+                ${exchange.matched_price.rule != null ? `
                 <tr class="*:p-3">
                   <td class="font-medium uppercase tracking-wide text-gray-500">Rule</td>
                   <td class="font-mono text-gray-700 break-all text-right">${esc(ruleText(exchange.matched_price))}</td>
                 </tr>
+                ` : ``}
                 <tr class="*:p-3">
                   <td class="font-medium uppercase tracking-wide text-gray-500">Input $/M</td>
                   <td class="font-mono text-gray-700 break-all text-right">${fmtCost(exchange.matched_price.input_per_m)}</td>
@@ -118,6 +150,7 @@ import { copyTextToClipboard, downloadTextFile, esc, estimateBytes, fmtBytes, fm
                   <td class="font-medium uppercase tracking-wide text-gray-500">Cache read $/M</td>
                   <td class="font-mono text-gray-700 break-all text-right">${fmtCost(exchange.matched_price.cache_read_per_m)}</td>
                 </tr>
+                ${above200kRowsHtml(exchange)}
               </tbody>
             </table>
           </div>

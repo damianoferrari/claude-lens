@@ -9,68 +9,107 @@ func TestUpsertPriceFromSync_CreatesWhenAbsent(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 
-	created, err := db.UpsertPriceFromSync(ctx, "brand-new-model", 2.20, 11.00, 2.75, 0.22, 1)
+	created, err := db.UpsertPriceFromSync(ctx, "brand-new-model", 2.20, 11.00, 2.75, 0.22, nil, nil, nil, nil, 1)
 	if err != nil {
 		t.Fatalf("UpsertPriceFromSync: %v", err)
 	}
 	if !created {
-		t.Fatal("expected created=true for a prefix with no existing rule")
+		t.Fatal("expected created=true for a prefix with no existing row")
 	}
 
-	prices, err := db.ListPrices(ctx)
+	p, err := db.GetPriceByPrefix(ctx, "brand-new-model")
 	if err != nil {
-		t.Fatalf("ListPrices: %v", err)
+		t.Fatalf("GetPriceByPrefix: %v", err)
 	}
-	found := false
-	for _, p := range prices {
-		if p.Prefix == "brand-new-model" && p.Rule == "over" && p.RuleTokens == 0 {
-			found = true
-			if p.InputPerM != 2.20 || p.OutputPerM != 11.00 {
-				t.Errorf("got (input=%v, output=%v), want (2.20, 11.00)", p.InputPerM, p.OutputPerM)
-			}
-		}
+	if p == nil {
+		t.Fatal("expected a new row for brand-new-model")
 	}
-	if !found {
-		t.Fatal("expected a new over-0 rule for brand-new-model")
+	if p.InputPerM != 2.20 || p.OutputPerM != 11.00 {
+		t.Errorf("got (input=%v, output=%v), want (2.20, 11.00)", p.InputPerM, p.OutputPerM)
 	}
 }
 
-func TestUpsertPriceFromSync_UpdatesExistingOverZeroRuleOnly(t *testing.T) {
+func TestUpsertPriceFromSync_OverwritesBaseRatesOnExistingRow(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 
-	// A prefix openTestDB doesn't already seed, so this test owns its only
-	// over-0 row and isn't racing the seeded defaults for it.
-	baseID, err := db.CreatePrice(ctx, Price{Prefix: "tiered-sync-model", Rule: "over", RuleTokens: 0, InputPerM: 3.00, OutputPerM: 15.00, CreatedAt: 1, UpdatedAt: 1})
+	id, err := db.CreatePrice(ctx, Price{Prefix: "sync-model", InputPerM: 3.00, OutputPerM: 15.00, CreatedAt: 1, UpdatedAt: 1})
 	if err != nil {
-		t.Fatalf("CreatePrice(base): %v", err)
-	}
-	tieredID, err := db.CreatePrice(ctx, Price{Prefix: "tiered-sync-model", Rule: "under", RuleTokens: 1000, InputPerM: 9.00, OutputPerM: 9.00, CreatedAt: 1, UpdatedAt: 1})
-	if err != nil {
-		t.Fatalf("CreatePrice(tiered): %v", err)
+		t.Fatalf("CreatePrice: %v", err)
 	}
 
-	created, err := db.UpsertPriceFromSync(ctx, "tiered-sync-model", 2.20, 11.00, 2.75, 0.22, 2)
+	created, err := db.UpsertPriceFromSync(ctx, "sync-model", 2.20, 11.00, 2.75, 0.22, nil, nil, nil, nil, 2)
 	if err != nil {
 		t.Fatalf("UpsertPriceFromSync: %v", err)
 	}
 	if created {
-		t.Fatal("expected created=false when an over-0 rule already exists")
+		t.Fatal("expected created=false when a row already exists")
 	}
 
-	base, err := db.GetPrice(ctx, baseID)
-	if err != nil || base == nil {
-		t.Fatalf("GetPrice(base): %v", err)
+	p, err := db.GetPrice(ctx, id)
+	if err != nil || p == nil {
+		t.Fatalf("GetPrice: %v", err)
 	}
-	if base.InputPerM != 2.20 || base.OutputPerM != 11.00 {
-		t.Errorf("base rule got (input=%v, output=%v), want (2.20, 11.00)", base.InputPerM, base.OutputPerM)
+	if p.InputPerM != 2.20 || p.OutputPerM != 11.00 {
+		t.Errorf("got (input=%v, output=%v), want (2.20, 11.00)", p.InputPerM, p.OutputPerM)
+	}
+}
+
+// TestUpsertPriceFromSync_PreservesManualAbove200kOverride verifies that a
+// sync which doesn't report an above-200k tier for a model leaves a
+// manually configured override in place, rather than clearing it.
+func TestUpsertPriceFromSync_PreservesManualAbove200kOverride(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	manualOverride := 20.0
+	id, err := db.CreatePrice(ctx, Price{
+		Prefix: "manual-tier-model", InputPerM: 3.00, OutputPerM: 15.00,
+		InputPerMAbove200k: &manualOverride, CreatedAt: 1, UpdatedAt: 1,
+	})
+	if err != nil {
+		t.Fatalf("CreatePrice: %v", err)
 	}
 
-	tiered, err := db.GetPrice(ctx, tieredID)
-	if err != nil || tiered == nil {
-		t.Fatalf("GetPrice(tiered): %v", err)
+	if _, err := db.UpsertPriceFromSync(ctx, "manual-tier-model", 2.20, 11.00, 2.75, 0.22, nil, nil, nil, nil, 2); err != nil {
+		t.Fatalf("UpsertPriceFromSync: %v", err)
 	}
-	if tiered.InputPerM != 9.00 || tiered.OutputPerM != 9.00 {
-		t.Errorf("tiered rule should be untouched by sync, got (input=%v, output=%v)", tiered.InputPerM, tiered.OutputPerM)
+
+	p, err := db.GetPrice(ctx, id)
+	if err != nil || p == nil {
+		t.Fatalf("GetPrice: %v", err)
+	}
+	if p.InputPerMAbove200k == nil || *p.InputPerMAbove200k != manualOverride {
+		t.Errorf("InputPerMAbove200k = %v, want the preserved manual override %v", p.InputPerMAbove200k, manualOverride)
+	}
+}
+
+// TestUpsertPriceFromSync_OverwritesAbove200kWhenSyncReportsIt verifies that
+// when the sync does supply a non-nil above-200k rate, it overwrites
+// whatever was there before.
+func TestUpsertPriceFromSync_OverwritesAbove200kWhenSyncReportsIt(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	oldOverride := 20.0
+	id, err := db.CreatePrice(ctx, Price{
+		Prefix: "reported-tier-model", InputPerM: 3.00, OutputPerM: 15.00,
+		InputPerMAbove200k: &oldOverride, CreatedAt: 1, UpdatedAt: 1,
+	})
+	if err != nil {
+		t.Fatalf("CreatePrice: %v", err)
+	}
+
+	newOverride := 30.0
+	if _, err := db.UpsertPriceFromSync(ctx, "reported-tier-model", 2.20, 11.00, 2.75, 0.22, &newOverride, nil, nil, nil, 2); err != nil {
+		t.Fatalf("UpsertPriceFromSync: %v", err)
+	}
+
+	p, err := db.GetPrice(ctx, id)
+	if err != nil || p == nil {
+		t.Fatalf("GetPrice: %v", err)
+	}
+	if p.InputPerMAbove200k == nil || *p.InputPerMAbove200k != newOverride {
+		t.Errorf("InputPerMAbove200k = %v, want the newly synced override %v", p.InputPerMAbove200k, newOverride)
 	}
 }

@@ -36,10 +36,11 @@ type Result struct {
 var ErrUpstreamUnavailable = errors.New("litellm upstream unavailable")
 
 // Sync pulls per-model rates from baseURL's LiteLLM /model/info endpoint
-// and upserts each model's unconditional ("over 0") price rule into db —
-// see database.UpsertPriceFromSync for why tiered rules are left alone —
-// then refreshes est so the new rates apply immediately and marks the
-// sync's completion time (see database.MarkLiteLLMSynced), so RunLoop's
+// and upserts each model's price row into db — see database.UpsertPriceFromSync
+// for why a manually configured above-200k override survives a sync that
+// doesn't report that tier — then refreshes est so the new rates apply
+// immediately and marks the sync's completion time (see
+// database.MarkLiteLLMSynced), so RunLoop's
 // staleness check doesn't immediately fire again right after. Returns an
 // error, without changing anything, if the fetch itself fails (e.g. baseURL
 // isn't a LiteLLM proxy) — wrapped in ErrUpstreamUnavailable — and records
@@ -57,7 +58,8 @@ func Sync(ctx context.Context, db *database.DB, est *pricing.Estimator, client *
 	now := float64(time.Now().Unix())
 	result := Result{Models: make([]string, 0, len(prices))}
 	for _, p := range prices {
-		created, err := db.UpsertPriceFromSync(ctx, p.ModelName, p.InputPerM, p.OutputPerM, p.CacheWritePerM, p.CacheReadPerM, now)
+		created, err := db.UpsertPriceFromSync(ctx, p.ModelName, p.InputPerM, p.OutputPerM, p.CacheWritePerM, p.CacheReadPerM,
+			p.InputPerMAbove200k, p.OutputPerMAbove200k, p.CacheWritePerMAbove200k, p.CacheReadPerMAbove200k, now)
 		if err != nil {
 			return Result{}, fmt.Errorf("upsert %s: %w", p.ModelName, err)
 		}

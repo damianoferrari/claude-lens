@@ -19,7 +19,7 @@ func openTestDB(t *testing.T) *database.DB {
 	return db
 }
 
-// clearPrices deletes every seeded/default rule so a test can install its
+// clearPrices deletes every seeded/default price so a test can install its
 // own exact scenario.
 func clearPrices(t *testing.T, db *database.DB) {
 	t.Helper()
@@ -30,20 +30,16 @@ func clearPrices(t *testing.T, db *database.DB) {
 	}
 }
 
-// createPrice is a small test helper around CreatePrice that fills in
-// Rule/RuleTokens defaults ("over", 0 — i.e. an unconditional catch-all)
-// when the caller doesn't care about tiering.
 func createPrice(t *testing.T, db *database.DB, p database.Price) int64 {
 	t.Helper()
-	if p.Rule == "" {
-		p.Rule = "over"
-	}
 	id, err := db.CreatePrice(context.Background(), p)
 	if err != nil {
 		t.Fatalf("CreatePrice(%s): %v", p.Prefix, err)
 	}
 	return id
 }
+
+func floatPtr(f float64) *float64 { return &f }
 
 func TestEstimateCosts_UsesDefaultSeededPrices(t *testing.T) {
 	db := openTestDB(t)
@@ -87,7 +83,7 @@ func TestEstimateCosts_ZeroCacheRateDoesNotBreakInputOutput(t *testing.T) {
 	// A price row with no cache rates set (e.g. one created before this
 	// feature, or never edited) must still price input/output normally and
 	// simply report 0 cache cost, not fail the match.
-	createPrice(t, db, database.Price{Prefix: "no-cache-rate-model", RuleTokens: 0, InputPerM: 2.00, OutputPerM: 10.00, CreatedAt: 1, UpdatedAt: 1})
+	createPrice(t, db, database.Price{Prefix: "no-cache-rate-model", InputPerM: 2.00, OutputPerM: 10.00, CreatedAt: 1, UpdatedAt: 1})
 
 	e := New(db)
 	if err := e.Refresh(ctx); err != nil {
@@ -130,8 +126,8 @@ func TestEstimateCosts_LongestPrefixWins(t *testing.T) {
 	clearPrices(t, db)
 	// Insert in an order where the shorter prefix comes last, to prove the
 	// result doesn't depend on insertion/scan order.
-	createPrice(t, db, database.Price{Prefix: "claude-sonnet", RuleTokens: 0, InputPerM: 1.00, OutputPerM: 1.00, CreatedAt: 1, UpdatedAt: 1})
-	createPrice(t, db, database.Price{Prefix: "claude-sonnet-4", RuleTokens: 0, InputPerM: 3.00, OutputPerM: 15.00, CreatedAt: 2, UpdatedAt: 2})
+	createPrice(t, db, database.Price{Prefix: "claude-sonnet", InputPerM: 1.00, OutputPerM: 1.00, CreatedAt: 1, UpdatedAt: 1})
+	createPrice(t, db, database.Price{Prefix: "claude-sonnet-4", InputPerM: 3.00, OutputPerM: 15.00, CreatedAt: 2, UpdatedAt: 2})
 
 	e := New(db)
 	if err := e.Refresh(ctx); err != nil {
@@ -151,8 +147,8 @@ func TestEstimateCosts_ExactMatchWinsOverShorterPrefix(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	clearPrices(t, db)
-	createPrice(t, db, database.Price{Prefix: "claude", RuleTokens: 0, InputPerM: 1.00, OutputPerM: 1.00, CreatedAt: 1, UpdatedAt: 1})
-	createPrice(t, db, database.Price{Prefix: "claude-sonnet-5", RuleTokens: 0, InputPerM: 3.00, OutputPerM: 15.00, CreatedAt: 2, UpdatedAt: 2})
+	createPrice(t, db, database.Price{Prefix: "claude", InputPerM: 1.00, OutputPerM: 1.00, CreatedAt: 1, UpdatedAt: 1})
+	createPrice(t, db, database.Price{Prefix: "claude-sonnet-5", InputPerM: 3.00, OutputPerM: 15.00, CreatedAt: 2, UpdatedAt: 2})
 
 	e := New(db)
 	if err := e.Refresh(ctx); err != nil {
@@ -165,49 +161,23 @@ func TestEstimateCosts_ExactMatchWinsOverShorterPrefix(t *testing.T) {
 	}
 }
 
-func TestEstimateCosts_ClosestRuleTokensWins(t *testing.T) {
+func TestEstimateCostsAndRule_ReturnsTheMatchedPrice(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	clearPrices(t, db)
-	// "over 200" and "under 1000" overlap on (200, 1000]. The rule whose
-	// threshold is numerically closest to promptTokens should win — not
-	// whichever was created most recently.
-	createPrice(t, db, database.Price{Prefix: "tiered-model", Rule: "over", RuleTokens: 200, InputPerM: 1.00, OutputPerM: 1.00, CreatedAt: 1, UpdatedAt: 1})
-	createPrice(t, db, database.Price{Prefix: "tiered-model", Rule: "under", RuleTokens: 1000, InputPerM: 9.00, OutputPerM: 9.00, CreatedAt: 2, UpdatedAt: 2})
+	createPrice(t, db, database.Price{Prefix: "tiered-model", InputPerM: 1.00, OutputPerM: 1.00, CreatedAt: 1, UpdatedAt: 1})
 
 	e := New(db)
 	if err := e.Refresh(ctx); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 
-	// promptTokens=201: distance to 200 is 1, to 1000 is 799 — "over 200" wins.
-	if costs, ok := e.EstimateCosts("tiered-model", 201, 0, 0, 0); !ok || costs.InputCost != 0.000201 {
-		t.Errorf("promptTokens=201: got ok=%v inputCost=%v, want the over-200 rate", ok, costs.InputCost)
-	}
-	// promptTokens=999: distance to 200 is 799, to 1000 is 1 — "under 1000" wins.
-	if costs, ok := e.EstimateCosts("tiered-model", 999, 0, 0, 0); !ok || costs.InputCost != 0.008991 {
-		t.Errorf("promptTokens=999: got ok=%v inputCost=%v, want the under-1000 rate", ok, costs.InputCost)
-	}
-}
-
-func TestEstimateCostsAndRule_ReturnsTheMatchedRule(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-	clearPrices(t, db)
-	createPrice(t, db, database.Price{Prefix: "tiered-model", Rule: "over", RuleTokens: 200, InputPerM: 1.00, OutputPerM: 1.00, CreatedAt: 1, UpdatedAt: 1})
-	createPrice(t, db, database.Price{Prefix: "tiered-model", Rule: "under", RuleTokens: 1000, InputPerM: 9.00, OutputPerM: 9.00, CreatedAt: 2, UpdatedAt: 2})
-
-	e := New(db)
-	if err := e.Refresh(ctx); err != nil {
-		t.Fatalf("Refresh: %v", err)
-	}
-
-	costs, rule, ok := e.EstimateCostsAndRule("tiered-model", 201, 0, 0, 0)
+	costs, price, ok := e.EstimateCostsAndRule("tiered-model", 201, 0, 0, 0)
 	if !ok || costs.InputCost != 0.000201 {
-		t.Errorf("got ok=%v inputCost=%v, want the over-200 rate", ok, costs.InputCost)
+		t.Errorf("got ok=%v inputCost=%v, want 0.000201", ok, costs.InputCost)
 	}
-	if rule.Rule != "over" || rule.RuleTokens != 200 {
-		t.Errorf("rule = %+v, want the over-200 rule", rule)
+	if price.Prefix != "tiered-model" {
+		t.Errorf("price = %+v, want the tiered-model price", price)
 	}
 
 	if _, _, ok := e.EstimateCostsAndRule("unknown-model", 100, 0, 0, 0); ok {
@@ -215,42 +185,85 @@ func TestEstimateCostsAndRule_ReturnsTheMatchedRule(t *testing.T) {
 	}
 }
 
-func TestEstimateCosts_ExactDistanceTieBreaksByRecency(t *testing.T) {
+func TestEstimateCosts_Above200kUsesOverrideRate(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	clearPrices(t, db)
-	// A literal duplicate rule (same rule + rule_tokens): distance is
-	// identical for both, so the more recently created one must win.
-	createPrice(t, db, database.Price{Prefix: "dup-model", Rule: "over", RuleTokens: 0, InputPerM: 1.00, OutputPerM: 1.00, CreatedAt: 1, UpdatedAt: 1})
-	createPrice(t, db, database.Price{Prefix: "dup-model", Rule: "over", RuleTokens: 0, InputPerM: 5.00, OutputPerM: 5.00, CreatedAt: 2, UpdatedAt: 2})
+	createPrice(t, db, database.Price{
+		Prefix: "long-context-model", InputPerM: 1.00, OutputPerM: 2.00, CacheWritePerM: 3.00, CacheReadPerM: 4.00,
+		InputPerMAbove200k: floatPtr(10.00), OutputPerMAbove200k: floatPtr(20.00),
+		CacheWritePerMAbove200k: floatPtr(30.00), CacheReadPerMAbove200k: floatPtr(40.00),
+		CreatedAt: 1, UpdatedAt: 1,
+	})
 
 	e := New(db)
 	if err := e.Refresh(ctx); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 
-	costs, ok := e.EstimateCosts("dup-model", 1_000_000, 0, 0, 0)
-	if !ok || costs.InputCost != 5.00 {
-		t.Errorf("got ok=%v inputCost=%v, want the more recently created duplicate (5.00)", ok, costs.InputCost)
+	// prompt = 200_000 exactly: not yet above the threshold, base rates apply.
+	costs, ok := e.EstimateCosts("long-context-model", 200_000, 1_000_000, 0, 0)
+	if !ok || costs.InputCost != 0.20 {
+		t.Errorf("prompt=200_000: got ok=%v inputCost=%v, want base rate 0.20", ok, costs.InputCost)
+	}
+
+	// prompt = 200_001: crosses the threshold, override rates apply to every
+	// cost category, using the call's actual token counts for each category.
+	costs, ok = e.EstimateCosts("long-context-model", 200_001, 1_000_000, 0, 0)
+	if !ok {
+		t.Fatal("expected a match")
+	}
+	wantInput := 10.00 * 200_001 / 1_000_000
+	if round6(costs.InputCost) != round6(wantInput) {
+		t.Errorf("prompt=200_001 InputCost = %v, want override rate ~%v", costs.InputCost, wantInput)
+	}
+	if costs.OutputCost != 20.00 {
+		t.Errorf("prompt=200_001 OutputCost = %v, want override rate 20.00", costs.OutputCost)
 	}
 }
 
-func TestEstimateCosts_NoRuleMatchesPromptSize(t *testing.T) {
+func TestEstimateCosts_Above200kFallsBackToBaseWhenNoOverride(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	clearPrices(t, db)
-	// Only a narrow "under 1000" tier exists for this prefix — a call far
-	// outside that range must report no match, not silently fall back to a
-	// shorter prefix or an unrelated rule.
-	createPrice(t, db, database.Price{Prefix: "narrow-model", Rule: "under", RuleTokens: 1000, InputPerM: 1.00, OutputPerM: 1.00, CreatedAt: 1, UpdatedAt: 1})
+	// No above-200k override configured — a large prompt must still price at
+	// the base rate rather than failing the match or zeroing out.
+	createPrice(t, db, database.Price{Prefix: "no-override-model", InputPerM: 1.00, OutputPerM: 2.00, CreatedAt: 1, UpdatedAt: 1})
 
 	e := New(db)
 	if err := e.Refresh(ctx); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 
-	if _, ok := e.EstimateCosts("narrow-model", 5000, 0, 0, 0); ok {
-		t.Fatal("expected no match: promptTokens=5000 exceeds the only rule's under-1000 range")
+	costs, ok := e.EstimateCosts("no-override-model", 1_000_000, 1_000_000, 0, 0)
+	if !ok || costs.InputCost != 1.00 || costs.OutputCost != 2.00 {
+		t.Errorf("got ok=%v (input=%v, output=%v), want base rates (1.00, 2.00)", ok, costs.InputCost, costs.OutputCost)
+	}
+}
+
+func TestEstimateCosts_PromptSizeIncludesCacheTokens(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	clearPrices(t, db)
+	createPrice(t, db, database.Price{
+		Prefix: "cache-heavy-model", InputPerM: 1.00, OutputPerM: 1.00,
+		InputPerMAbove200k: floatPtr(9.00), CreatedAt: 1, UpdatedAt: 1,
+	})
+
+	e := New(db)
+	if err := e.Refresh(ctx); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	// 50k input + 100k cache-creation + 60k cache-read = 210k prompt tokens,
+	// above the threshold even though input tokens alone aren't.
+	costs, ok := e.EstimateCosts("cache-heavy-model", 50_000, 0, 100_000, 60_000)
+	if !ok {
+		t.Fatal("expected a match")
+	}
+	wantInput := 9.00 * 50_000 / 1_000_000
+	if round6(costs.InputCost) != round6(wantInput) {
+		t.Errorf("InputCost = %v, want override rate ~%v (prompt size crosses 200k via cache tokens)", costs.InputCost, wantInput)
 	}
 }
 
@@ -266,7 +279,7 @@ func TestRefresh_PicksUpChangesWithoutRestart(t *testing.T) {
 		t.Fatal("expected no match before the price exists")
 	}
 
-	createPrice(t, db, database.Price{Prefix: "brand-new-model", RuleTokens: 0, InputPerM: 9, OutputPerM: 9, CreatedAt: 1, UpdatedAt: 1})
+	createPrice(t, db, database.Price{Prefix: "brand-new-model", InputPerM: 9, OutputPerM: 9, CreatedAt: 1, UpdatedAt: 1})
 	if err := e.Refresh(ctx); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}

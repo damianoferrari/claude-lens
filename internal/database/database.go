@@ -85,18 +85,19 @@ CREATE INDEX IF NOT EXISTS idx_exchanges_ledger_timestamp   ON exchanges_ledger 
 CREATE INDEX IF NOT EXISTS idx_exchanges_ledger_exchange_id ON exchanges_ledger (exchange_id);
 
 CREATE TABLE IF NOT EXISTS model_prices (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    model_prefix      TEXT    NOT NULL,
-    rule              TEXT    NOT NULL DEFAULT 'over',
-    rule_tokens       INTEGER NOT NULL DEFAULT 0,
-    input_per_m       REAL    NOT NULL,
-    output_per_m      REAL    NOT NULL,
-    cache_write_per_m REAL    NOT NULL DEFAULT 0,
-    cache_read_per_m  REAL    NOT NULL DEFAULT 0,
-    created_at        REAL    NOT NULL,
-    updated_at        REAL    NOT NULL
+    id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_prefix                 TEXT    NOT NULL UNIQUE,
+    input_per_m                  REAL    NOT NULL,
+    output_per_m                 REAL    NOT NULL,
+    cache_write_per_m            REAL    NOT NULL DEFAULT 0,
+    cache_read_per_m             REAL    NOT NULL DEFAULT 0,
+    input_per_m_above_200k       REAL,
+    output_per_m_above_200k      REAL,
+    cache_write_per_m_above_200k REAL,
+    cache_read_per_m_above_200k  REAL,
+    created_at                   REAL    NOT NULL,
+    updated_at                   REAL    NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_model_prices_prefix ON model_prices (model_prefix);
 
 CREATE TABLE IF NOT EXISTS limiters (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,6 +244,88 @@ func migrateModelPricesToRules(ctx context.Context, sqlDB *sql.DB) error {
 	return tx.Commit()
 }
 
+// migrateModelPricesToUniquePrefix collapses model_prices from the tiered,
+// multi-row-per-prefix shape back down to a single unique row per prefix,
+// now that a prefix's price config carries its own above-200k override
+// columns instead of separate rule rows. Guarded by presence of the `rule`
+// column: a no-op on a fresh DB (already created in the new shape by
+// `schema` above) or an already-migrated one. Runs after
+// migrateModelPricesToRules so it can rely on that shape existing even for
+// a very old DB.
+//
+// For each prefix, the kept row is its unconditional "over 0" rule if one
+// exists, else the row with the smallest rule_tokens (tie-broken by lowest
+// id) so a prefix's pricing is never lost outright. Any other tiered rule a
+// prefix owned is discarded — above-200k overrides start unset and are
+// populated afterward by a LiteLLM sync or manual admin entry.
+func migrateModelPricesToUniquePrefix(ctx context.Context, sqlDB *sql.DB) error {
+	cols, err := tableColumns(ctx, sqlDB, "model_prices")
+	if err != nil {
+		return fmt.Errorf("inspect columns of model_prices: %w", err)
+	}
+	if !cols["rule"] {
+		return nil
+	}
+
+	tx, err := sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE model_prices_new (
+		    id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+		    model_prefix                 TEXT    NOT NULL UNIQUE,
+		    input_per_m                  REAL    NOT NULL,
+		    output_per_m                 REAL    NOT NULL,
+		    cache_write_per_m            REAL    NOT NULL DEFAULT 0,
+		    cache_read_per_m             REAL    NOT NULL DEFAULT 0,
+		    input_per_m_above_200k       REAL,
+		    output_per_m_above_200k      REAL,
+		    cache_write_per_m_above_200k REAL,
+		    cache_read_per_m_above_200k  REAL,
+		    created_at                   REAL    NOT NULL,
+		    updated_at                   REAL    NOT NULL
+		)`); err != nil {
+		return fmt.Errorf("create model_prices_new: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO model_prices_new
+		    (model_prefix, input_per_m, output_per_m, cache_write_per_m, cache_read_per_m, created_at, updated_at)
+		SELECT model_prefix, input_per_m, output_per_m, cache_write_per_m, cache_read_per_m, created_at, updated_at
+		FROM model_prices
+		WHERE id IN (
+		    SELECT id FROM model_prices AS p
+		    WHERE rule = 'over' AND rule_tokens = 0
+
+		    UNION ALL
+
+		    SELECT id FROM model_prices AS p
+		    WHERE NOT EXISTS (
+		        SELECT 1 FROM model_prices AS base
+		        WHERE base.model_prefix = p.model_prefix AND base.rule = 'over' AND base.rule_tokens = 0
+		    )
+		    AND p.rule_tokens = (
+		        SELECT MIN(rule_tokens) FROM model_prices AS m WHERE m.model_prefix = p.model_prefix
+		    )
+		    AND p.id = (
+		        SELECT MIN(id) FROM model_prices AS m
+		        WHERE m.model_prefix = p.model_prefix AND m.rule_tokens = p.rule_tokens
+		    )
+		)`); err != nil {
+		return fmt.Errorf("copy model_prices rows: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE model_prices`); err != nil {
+		return fmt.Errorf("drop old model_prices: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE model_prices_new RENAME TO model_prices`); err != nil {
+		return fmt.Errorf("rename model_prices_new: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 // migrateExchangesLedgerBackfill copies every exchange's cost/token data
 // into exchanges_ledger for rows that predate that table's existence. The
 // NOT EXISTS guard makes this safe on every startup: a no-op on a fresh DB
@@ -326,6 +409,10 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	if err := migrateModelPricesToRules(ctx, sqlDB); err != nil {
 		sqlDB.Close()
 		return nil, fmt.Errorf("migrate model_prices to rules: %w", err)
+	}
+	if err := migrateModelPricesToUniquePrefix(ctx, sqlDB); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("migrate model_prices to unique prefix: %w", err)
 	}
 	if err := migrateExchangesLedgerBackfill(ctx, sqlDB); err != nil {
 		sqlDB.Close()

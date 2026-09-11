@@ -492,8 +492,8 @@ func TestPricesCRUD(t *testing.T) {
 	}
 
 	rec = doJSON(t, s, http.MethodPost, "/api/prices", map[string]any{
-		"model_prefix": "my-custom-model", "rule": "over", "rule_tokens": 0,
-		"input_per_m": 2.5, "output_per_m": 12,
+		"model_prefix": "my-custom-model",
+		"input_per_m":  2.5, "output_per_m": 12,
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST status = %d, want 200: %s", rec.Code, rec.Body.String())
@@ -524,33 +524,43 @@ func TestPricesCRUD(t *testing.T) {
 	}
 }
 
-func TestCreatePrice_ValidatesRule(t *testing.T) {
+func TestCreatePrice_DuplicatePrefixIsConflict(t *testing.T) {
 	s, _ := newTestServer(t)
 
 	rec := doJSON(t, s, http.MethodPost, "/api/prices", map[string]any{
-		"model_prefix": "bad-rule-model", "rule": "sideways", "rule_tokens": 0,
-		"input_per_m": 1, "output_per_m": 1,
+		"model_prefix": "dup-model", "input_per_m": 1, "output_per_m": 1,
 	})
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("invalid rule: status = %d, want 400", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first POST status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 
 	rec = doJSON(t, s, http.MethodPost, "/api/prices", map[string]any{
-		"model_prefix": "missing-tokens-model", "rule": "over",
-		"input_per_m": 1, "output_per_m": 1,
+		"model_prefix": "dup-model", "input_per_m": 2, "output_per_m": 2,
 	})
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("missing rule_tokens: status = %d, want 400", rec.Code)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("duplicate prefix: status = %d, want 409: %s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestUpdatePrice_CacheRatesOptional(t *testing.T) {
+func TestCreatePrice_MissingRequiredFieldsIsBadRequest(t *testing.T) {
 	s, _ := newTestServer(t)
 
-	// Create with explicit cache rates.
 	rec := doJSON(t, s, http.MethodPost, "/api/prices", map[string]any{
-		"model_prefix": "cache-model", "rule": "over", "rule_tokens": 0,
-		"input_per_m": 2.0, "output_per_m": 10.0, "cache_write_per_m": 2.5, "cache_read_per_m": 0.2,
+		"model_prefix": "missing-output-model", "input_per_m": 1,
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("missing output_per_m: status = %d, want 400", rec.Code)
+	}
+}
+
+func TestUpdatePrice_FullReplaceSemantics(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	// Create with explicit cache rates and an above-200k override.
+	rec := doJSON(t, s, http.MethodPost, "/api/prices", map[string]any{
+		"model_prefix": "cache-model",
+		"input_per_m":  2.0, "output_per_m": 10.0, "cache_write_per_m": 2.5, "cache_read_per_m": 0.2,
+		"input_per_m_above_200k": 20.0,
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST status = %d, want 200: %s", rec.Code, rec.Body.String())
@@ -561,8 +571,9 @@ func TestUpdatePrice_CacheRatesOptional(t *testing.T) {
 		t.Fatalf("unexpected cache rates after create: %+v", p)
 	}
 
-	// Update input/output only, omitting cache rates — they must be
-	// preserved, not reset to 0.
+	// Update input/output only, omitting cache rates and the above-200k
+	// override — the dialog always submits the full form, so an omitted
+	// field means "clear it", not "leave unchanged".
 	rec = doJSON(t, s, http.MethodPut, "/api/prices/"+strconv.FormatInt(p.ID, 10), map[string]float64{
 		"input_per_m": 3.0, "output_per_m": 11.0,
 	})
@@ -573,8 +584,11 @@ func TestUpdatePrice_CacheRatesOptional(t *testing.T) {
 	if p.InputPerM != 3.0 || p.OutputPerM != 11.0 {
 		t.Errorf("input/output not updated: %+v", p)
 	}
-	if p.CacheWritePerM != 2.5 || p.CacheReadPerM != 0.2 {
-		t.Errorf("cache rates were reset when omitted from the update, want preserved: %+v", p)
+	if p.CacheWritePerM != 0 || p.CacheReadPerM != 0 {
+		t.Errorf("cache rates were not cleared when omitted from the update: %+v", p)
+	}
+	if p.InputPerMAbove200k != nil {
+		t.Errorf("InputPerMAbove200k = %v, want nil (cleared when omitted)", *p.InputPerMAbove200k)
 	}
 }
 
@@ -610,12 +624,12 @@ func TestSyncPricesFromLiteLLM_UpsertsAndReportsCounts(t *testing.T) {
 	}
 	var sonnet *database.Price
 	for i, p := range prices {
-		if p.Prefix == "claude-sonnet-5" && p.Rule == "over" && p.RuleTokens == 0 {
+		if p.Prefix == "claude-sonnet-5" {
 			sonnet = &prices[i]
 		}
 	}
 	if sonnet == nil {
-		t.Fatal("expected an over-0 claude-sonnet-5 rule")
+		t.Fatal("expected a claude-sonnet-5 price row")
 	}
 	if sonnet.InputPerM != 2.2 || sonnet.OutputPerM != 11 {
 		t.Errorf("claude-sonnet-5 not synced: got (input=%v, output=%v), want (2.2, 11)", sonnet.InputPerM, sonnet.OutputPerM)
@@ -656,8 +670,8 @@ func TestCreatePrice_RefreshesEstimatorImmediately(t *testing.T) {
 	ctx := context.Background()
 
 	rec := doJSON(t, s, http.MethodPost, "/api/prices", map[string]any{
-		"model_prefix": "brand-new", "rule": "over", "rule_tokens": 0,
-		"input_per_m": 9, "output_per_m": 9,
+		"model_prefix": "brand-new",
+		"input_per_m":  9, "output_per_m": 9,
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST status = %d, want 200: %s", rec.Code, rec.Body.String())

@@ -43,7 +43,7 @@ func TestOpen_SeedsDefaultPrices(t *testing.T) {
 			opusID = p.ID
 		}
 	}
-	if err := db.UpdatePrice(context.Background(), opusID, 99, 99, 0, 0, 1); err != nil {
+	if err := db.UpdatePrice(context.Background(), opusID, Price{InputPerM: 99, OutputPerM: 99, UpdatedAt: 1}); err != nil {
 		t.Fatalf("UpdatePrice: %v", err)
 	}
 	if err := db.seedDefaultPrices(context.Background()); err != nil {
@@ -64,11 +64,11 @@ func TestPricesCRUD(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 
-	id, err := db.CreatePrice(ctx, Price{Prefix: "custom-model", Rule: "over", RuleTokens: 0, InputPerM: 2.5, OutputPerM: 10, CreatedAt: 123, UpdatedAt: 123})
+	id, err := db.CreatePrice(ctx, Price{Prefix: "custom-model", InputPerM: 2.5, OutputPerM: 10, CreatedAt: 123, UpdatedAt: 123})
 	if err != nil {
 		t.Fatalf("CreatePrice: %v", err)
 	}
-	if err := db.UpdatePrice(ctx, id, 3.5, 11, 0, 0, 124); err != nil {
+	if err := db.UpdatePrice(ctx, id, Price{InputPerM: 3.5, OutputPerM: 11, UpdatedAt: 124}); err != nil {
 		t.Fatalf("UpdatePrice: %v", err)
 	}
 
@@ -675,6 +675,87 @@ func TestDeleteExchanges_LedgerSurvives(t *testing.T) {
 
 	if exchangeID := ledgerExchangeIDByLedgerID(t, db, ledgerID); exchangeID != nil {
 		t.Errorf("ledger exchange_id after delete = %v, want nil (ON DELETE SET NULL)", *exchangeID)
+	}
+}
+
+// TestMigrateModelPricesToUniquePrefix verifies that the tiered rule-shaped
+// model_prices table collapses to one row per prefix: a prefix with an
+// unconditional "over 0" rule keeps that row, while a prefix with only
+// non-conforming tiered rules (e.g. an admin deleted the base rule but kept
+// a custom one) falls back to its smallest rule_tokens row instead of
+// losing pricing entirely.
+func TestMigrateModelPricesToUniquePrefix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-rules.db")
+
+	legacySchema := `
+CREATE TABLE model_prices (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_prefix      TEXT    NOT NULL,
+    rule              TEXT    NOT NULL DEFAULT 'over',
+    rule_tokens       INTEGER NOT NULL DEFAULT 0,
+    input_per_m       REAL    NOT NULL,
+    output_per_m      REAL    NOT NULL,
+    cache_write_per_m REAL    NOT NULL DEFAULT 0,
+    cache_read_per_m  REAL    NOT NULL DEFAULT 0,
+    created_at        REAL    NOT NULL,
+    updated_at        REAL    NOT NULL
+);
+INSERT INTO model_prices (model_prefix, rule, rule_tokens, input_per_m, output_per_m, created_at, updated_at)
+VALUES ('claude-sonnet-5', 'over', 0, 3.0, 15.0, 100, 100);
+INSERT INTO model_prices (model_prefix, rule, rule_tokens, input_per_m, output_per_m, created_at, updated_at)
+VALUES ('claude-sonnet-5', 'over', 200000, 6.0, 30.0, 100, 100);
+INSERT INTO model_prices (model_prefix, rule, rule_tokens, input_per_m, output_per_m, created_at, updated_at)
+VALUES ('claude-opus-5', 'under', 500000, 20.0, 100.0, 200, 200);
+INSERT INTO model_prices (model_prefix, rule, rule_tokens, input_per_m, output_per_m, created_at, updated_at)
+VALUES ('claude-opus-5', 'over', 500000, 40.0, 200.0, 200, 200);
+`
+	setupDB, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := setupDB.Exec(legacySchema); err != nil {
+		t.Fatalf("apply legacy schema: %v", err)
+	}
+	if err := setupDB.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	db, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Open (migration): %v", err)
+	}
+	defer db.Close()
+
+	prices, err := db.ListPrices(context.Background())
+	if err != nil {
+		t.Fatalf("ListPrices after migration: %v", err)
+	}
+
+	byPrefix := make(map[string]Price, len(prices))
+	for _, p := range prices {
+		if _, dup := byPrefix[p.Prefix]; dup {
+			t.Fatalf("prefix %q kept more than one row after migration: %+v", p.Prefix, prices)
+		}
+		byPrefix[p.Prefix] = p
+	}
+
+	sonnet, ok := byPrefix["claude-sonnet-5"]
+	if !ok {
+		t.Fatal("claude-sonnet-5 missing after migration")
+	}
+	if sonnet.InputPerM != 3.0 || sonnet.OutputPerM != 15.0 {
+		t.Errorf("claude-sonnet-5 = %+v, want the 'over 0' row (3.0/15.0)", sonnet)
+	}
+	if sonnet.InputPerMAbove200k != nil {
+		t.Errorf("claude-sonnet-5 InputPerMAbove200k = %v, want nil (discarded tiered rule)", *sonnet.InputPerMAbove200k)
+	}
+
+	opus, ok := byPrefix["claude-opus-5"]
+	if !ok {
+		t.Fatal("claude-opus-5 missing after migration")
+	}
+	if opus.InputPerM != 20.0 || opus.OutputPerM != 100.0 {
+		t.Errorf("claude-opus-5 = %+v, want the smallest-rule_tokens fallback row (20.0/100.0)", opus)
 	}
 }
 

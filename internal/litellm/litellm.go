@@ -13,13 +13,19 @@ import (
 )
 
 // ModelPrice is one model's USD-per-million-token rates, converted from the
-// per-token rates a LiteLLM proxy reports.
+// per-token rates a LiteLLM proxy reports. The four *Above200k fields are
+// nil unless the proxy reports that tier for this model — see
+// database.Price for how a nil override behaves.
 type ModelPrice struct {
-	ModelName      string
-	InputPerM      float64
-	OutputPerM     float64
-	CacheWritePerM float64
-	CacheReadPerM  float64
+	ModelName               string
+	InputPerM               float64
+	OutputPerM              float64
+	CacheWritePerM          float64
+	CacheReadPerM           float64
+	InputPerMAbove200k      *float64
+	OutputPerMAbove200k     *float64
+	CacheWritePerMAbove200k *float64
+	CacheReadPerMAbove200k  *float64
 }
 
 // Client fetches model pricing from a LiteLLM proxy with a bounded timeout.
@@ -37,10 +43,14 @@ type modelInfoResponse struct {
 	Data []struct {
 		ModelName string `json:"model_name"`
 		ModelInfo struct {
-			InputCostPerToken           float64 `json:"input_cost_per_token"`
-			OutputCostPerToken          float64 `json:"output_cost_per_token"`
-			CacheCreationInputTokenCost float64 `json:"cache_creation_input_token_cost"`
-			CacheReadInputTokenCost     float64 `json:"cache_read_input_token_cost"`
+			InputCostPerToken                    float64  `json:"input_cost_per_token"`
+			OutputCostPerToken                   float64  `json:"output_cost_per_token"`
+			CacheCreationInputTokenCost          float64  `json:"cache_creation_input_token_cost"`
+			CacheReadInputTokenCost              float64  `json:"cache_read_input_token_cost"`
+			InputCostPerTokenAbove200k           *float64 `json:"input_cost_per_token_above_200k_tokens"`
+			OutputCostPerTokenAbove200k          *float64 `json:"output_cost_per_token_above_200k_tokens"`
+			CacheCreationInputTokenCostAbove200k *float64 `json:"cache_creation_input_token_cost_above_200k_tokens"`
+			CacheReadInputTokenCostAbove200k     *float64 `json:"cache_read_input_token_cost_above_200k_tokens"`
 		} `json:"model_info"`
 	} `json:"data"`
 }
@@ -80,14 +90,28 @@ func (c *Client) FetchModelPrices(ctx context.Context, baseURL, authToken string
 			continue
 		}
 		prices = append(prices, ModelPrice{
-			ModelName:      m.ModelName,
-			InputPerM:      round6(m.ModelInfo.InputCostPerToken * 1_000_000),
-			OutputPerM:     round6(m.ModelInfo.OutputCostPerToken * 1_000_000),
-			CacheWritePerM: round6(m.ModelInfo.CacheCreationInputTokenCost * 1_000_000),
-			CacheReadPerM:  round6(m.ModelInfo.CacheReadInputTokenCost * 1_000_000),
+			ModelName:               m.ModelName,
+			InputPerM:               round6(m.ModelInfo.InputCostPerToken * 1_000_000),
+			OutputPerM:              round6(m.ModelInfo.OutputCostPerToken * 1_000_000),
+			CacheWritePerM:          round6(m.ModelInfo.CacheCreationInputTokenCost * 1_000_000),
+			CacheReadPerM:           round6(m.ModelInfo.CacheReadInputTokenCost * 1_000_000),
+			InputPerMAbove200k:      perMPtr(m.ModelInfo.InputCostPerTokenAbove200k),
+			OutputPerMAbove200k:     perMPtr(m.ModelInfo.OutputCostPerTokenAbove200k),
+			CacheWritePerMAbove200k: perMPtr(m.ModelInfo.CacheCreationInputTokenCostAbove200k),
+			CacheReadPerMAbove200k:  perMPtr(m.ModelInfo.CacheReadInputTokenCostAbove200k),
 		})
 	}
 	return prices, nil
+}
+
+// perMPtr converts a per-token rate to a per-million-token rate, preserving
+// nil (no override reported) instead of defaulting it to zero.
+func perMPtr(perToken *float64) *float64 {
+	if perToken == nil {
+		return nil
+	}
+	perM := round6(*perToken * 1_000_000)
+	return &perM
 }
 
 // round6 rounds to 6 decimal places, clearing the float64 noise a per-token

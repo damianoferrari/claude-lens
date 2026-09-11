@@ -282,25 +282,31 @@ func (h *handlers) listPrices(w http.ResponseWriter, r *http.Request) {
 }
 
 type createPriceRequest struct {
-	Prefix         string   `json:"model_prefix"`
-	Rule           string   `json:"rule"`
-	RuleTokens     *int64   `json:"rule_tokens"`
-	InputPerM      *float64 `json:"input_per_m"`
-	OutputPerM     *float64 `json:"output_per_m"`
-	CacheWritePerM *float64 `json:"cache_write_per_m"`
-	CacheReadPerM  *float64 `json:"cache_read_per_m"`
+	Prefix                  string   `json:"model_prefix"`
+	InputPerM               *float64 `json:"input_per_m"`
+	OutputPerM              *float64 `json:"output_per_m"`
+	CacheWritePerM          *float64 `json:"cache_write_per_m"`
+	CacheReadPerM           *float64 `json:"cache_read_per_m"`
+	InputPerMAbove200k      *float64 `json:"input_per_m_above_200k"`
+	OutputPerMAbove200k     *float64 `json:"output_per_m_above_200k"`
+	CacheWritePerMAbove200k *float64 `json:"cache_write_per_m_above_200k"`
+	CacheReadPerMAbove200k  *float64 `json:"cache_read_per_m_above_200k"`
 }
 
-// createPrice adds a new rule row for a prefix. Always inserts —
-// duplicate/overlapping prefixes are expected, since a prefix can own
-// several tiered rules (see internal/pricing for how overlaps are resolved).
+// isUniqueConstraintErr reports whether err is SQLite's error for a UNIQUE
+// constraint violation.
+func isUniqueConstraintErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+// createPrice adds the price row for a prefix. A prefix owns at most one
+// row — creating a second one for the same prefix fails with 409, since
+// model_prices.model_prefix is UNIQUE.
 func (h *handlers) createPrice(w http.ResponseWriter, r *http.Request) {
 	var req createPriceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
-		req.Prefix == "" || (req.Rule != "over" && req.Rule != "under") ||
-		req.RuleTokens == nil || *req.RuleTokens < 0 ||
-		req.InputPerM == nil || req.OutputPerM == nil {
-		writeError(w, http.StatusBadRequest, "model_prefix, rule (over|under), rule_tokens, input_per_m and output_per_m are required")
+		req.Prefix == "" || req.InputPerM == nil || req.OutputPerM == nil {
+		writeError(w, http.StatusBadRequest, "model_prefix, input_per_m and output_per_m are required")
 		return
 	}
 
@@ -314,18 +320,24 @@ func (h *handlers) createPrice(w http.ResponseWriter, r *http.Request) {
 
 	now := float64(time.Now().Unix())
 	p := database.Price{
-		Prefix:         req.Prefix,
-		Rule:           req.Rule,
-		RuleTokens:     *req.RuleTokens,
-		InputPerM:      *req.InputPerM,
-		OutputPerM:     *req.OutputPerM,
-		CacheWritePerM: cacheWritePerM,
-		CacheReadPerM:  cacheReadPerM,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		Prefix:                  req.Prefix,
+		InputPerM:               *req.InputPerM,
+		OutputPerM:              *req.OutputPerM,
+		CacheWritePerM:          cacheWritePerM,
+		CacheReadPerM:           cacheReadPerM,
+		InputPerMAbove200k:      req.InputPerMAbove200k,
+		OutputPerMAbove200k:     req.OutputPerMAbove200k,
+		CacheWritePerMAbove200k: req.CacheWritePerMAbove200k,
+		CacheReadPerMAbove200k:  req.CacheReadPerMAbove200k,
+		CreatedAt:               now,
+		UpdatedAt:               now,
 	}
 	id, err := h.db.CreatePrice(r.Context(), p)
 	if err != nil {
+		if isUniqueConstraintErr(err) {
+			writeError(w, http.StatusConflict, "a price already exists for this prefix — edit it instead")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -361,16 +373,20 @@ func (h *handlers) syncPricesFromLiteLLM(w http.ResponseWriter, r *http.Request)
 }
 
 type updatePriceRequest struct {
-	InputPerM      *float64 `json:"input_per_m"`
-	OutputPerM     *float64 `json:"output_per_m"`
-	CacheWritePerM *float64 `json:"cache_write_per_m"`
-	CacheReadPerM  *float64 `json:"cache_read_per_m"`
+	InputPerM               *float64 `json:"input_per_m"`
+	OutputPerM              *float64 `json:"output_per_m"`
+	CacheWritePerM          *float64 `json:"cache_write_per_m"`
+	CacheReadPerM           *float64 `json:"cache_read_per_m"`
+	InputPerMAbove200k      *float64 `json:"input_per_m_above_200k"`
+	OutputPerMAbove200k     *float64 `json:"output_per_m_above_200k"`
+	CacheWritePerMAbove200k *float64 `json:"cache_write_per_m_above_200k"`
+	CacheReadPerMAbove200k  *float64 `json:"cache_read_per_m_above_200k"`
 }
 
-// updatePrice patches an existing rule row's rates. Cache rates are
-// optional: an omitted field keeps whatever the row already has, so a
-// client that doesn't know about cache pricing can't accidentally zero it
-// out. Prefix/rule/rule_tokens are immutable once created.
+// updatePrice replaces an existing price row's rates and above-200k
+// overrides wholesale. The dialog always submits the full form, so a
+// missing tier field means "clear the override", not "leave unchanged".
+// Prefix is immutable once created.
 func (h *handlers) updatePrice(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -394,7 +410,7 @@ func (h *handlers) updatePrice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheWritePerM, cacheReadPerM := existing.CacheWritePerM, existing.CacheReadPerM
+	var cacheWritePerM, cacheReadPerM float64
 	if req.CacheWritePerM != nil {
 		cacheWritePerM = *req.CacheWritePerM
 	}
@@ -403,7 +419,18 @@ func (h *handlers) updatePrice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updatedAt := float64(time.Now().Unix())
-	if err := h.db.UpdatePrice(r.Context(), id, *req.InputPerM, *req.OutputPerM, cacheWritePerM, cacheReadPerM, updatedAt); err != nil {
+	p := database.Price{
+		InputPerM:               *req.InputPerM,
+		OutputPerM:              *req.OutputPerM,
+		CacheWritePerM:          cacheWritePerM,
+		CacheReadPerM:           cacheReadPerM,
+		InputPerMAbove200k:      req.InputPerMAbove200k,
+		OutputPerMAbove200k:     req.OutputPerMAbove200k,
+		CacheWritePerMAbove200k: req.CacheWritePerMAbove200k,
+		CacheReadPerMAbove200k:  req.CacheReadPerMAbove200k,
+		UpdatedAt:               updatedAt,
+	}
+	if err := h.db.UpdatePrice(r.Context(), id, p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -412,10 +439,8 @@ func (h *handlers) updatePrice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing.InputPerM, existing.OutputPerM = *req.InputPerM, *req.OutputPerM
-	existing.CacheWritePerM, existing.CacheReadPerM = cacheWritePerM, cacheReadPerM
-	existing.UpdatedAt = updatedAt
-	writeJSON(w, http.StatusOK, existing)
+	p.ID, p.Prefix, p.CreatedAt = existing.ID, existing.Prefix, existing.CreatedAt
+	writeJSON(w, http.StatusOK, p)
 }
 
 func (h *handlers) deletePrice(w http.ResponseWriter, r *http.Request) {

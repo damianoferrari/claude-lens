@@ -30,7 +30,7 @@
           class="text-emerald-700 text-sm font-medium px-4 py-2 border border-emerald-600 rounded-md hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed">
           Sync from LiteLLM
         </button>
-        <button command="show-modal" commandfor="add-price-dialog"
+        <button command="show-modal" commandfor="price-dialog" id="add-price-btn"
           class="text-white text-sm font-medium px-4 py-2 bg-emerald-600 rounded-md hover:bg-emerald-700">
           + Add price
         </button>
@@ -41,91 +41,28 @@
       model name returned by the API — changes apply only to new requests.
     </p>
 
-    <!-- ── Prices Table ───────────────────────────────────────────────────── -->
-    <section aria-label="Model prices" class="overflow-x-auto bg-white rounded-lg border border-gray-200">
-      <table class="w-full text-sm">
-        <thead class="text-left text-gray-500 bg-gray-50 border-b border-gray-200">
-          <tr>
-            <th class="font-medium px-4 py-2">Model prefix</th>
-            <th class="font-medium px-4 py-2">Rule</th>
-            <th class="font-medium text-right px-4 py-2">Tokens</th>
-            <th class="font-medium text-right px-4 py-2">Input $/M</th>
-            <th class="font-medium text-right px-4 py-2">Output $/M</th>
-            <th class="font-medium text-right px-4 py-2">Cache write $/M</th>
-            <th class="font-medium text-right px-4 py-2">Cache read $/M</th>
-            <th class="font-medium px-4 py-2">Updated</th>
-            <th class="font-medium px-4 py-2"></th>
-          </tr>
-        </thead>
-        <tbody id="prices-tbody" class="divide-y divide-gray-100">
-          <tr>
-            <td colspan="9" class="text-center text-gray-400 px-4 py-8">Loading…</td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <!-- ── How rules are picked ────────────────────────────────────────── -->
-    <section aria-label="How rules are picked" class="text-sm text-gray-600 p-5 mt-6 space-y-2 bg-white rounded-lg border border-gray-200">
-      <p class="font-medium uppercase tracking-wide text-xs text-gray-500">How rules are picked</p>
-      <p class="text-gray-500 text-xs">A model prefix can own several rule rows, each gated by a token-count rule:</p>
-      <ul class="list-inside list-disc text-gray-500 text-xs space-y-1">
-        <li><strong>Over N</strong> matches when the request's prompt size is greater than N.</li>
-        <li><strong>Under N (inclusive)</strong> matches when the request's prompt size is less than or equal to N.</li>
-      </ul>
-      <p class="text-gray-500 text-xs">
-        When more than one rule on a prefix matches, the one whose token threshold is numerically closest to the
-        request's prompt size wins — the same "most specific match wins" idea used for prefix matching itself. An
-        exact distance tie (only possible with a literal duplicate rule) is broken by whichever rule was created
-        most recently.
-      </p>
+    <!-- ── Prices Grid ─────────────────────────────────────────────────── -->
+    <section aria-label="Model prices" id="prices-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <p class="col-span-full text-center text-gray-400 py-8">Loading…</p>
     </section>
   </main>
-
-  <!-- ── Unsaved Changes Bar ─────────────────────────────────────────────── -->
-  <div id="price-changes-bar"
-    class="hidden fixed inset-x-0 bottom-0 z-40 transition-all duration-200 ease-out translate-y-2 opacity-0">
-    <div class="max-w-7xl mx-auto px-6 pb-4">
-      <div class="flex items-center text-white px-4 py-3 gap-4 bg-gray-900 rounded-lg shadow-lg">
-        <span id="price-changes-count" class="text-sm font-medium">0 unsaved changes</span>
-        <span id="price-changes-message" class="flex-1 text-xs text-gray-300"></span>
-        <button id="price-changes-discard" class="text-sm text-gray-300 px-3 py-1.5 hover:text-white rounded-md hover:bg-white/10">Discard</button>
-        <button id="price-changes-save" class="text-white text-sm font-medium px-4 py-1.5 bg-emerald-600 rounded-md hover:bg-emerald-700">Save changes</button>
-      </div>
-    </div>
-  </div>
 
   <!-- ── Tooltip ─────────────────────────────────────────────────────────── -->
   <div id="app-tooltip" role="tooltip" class="whitespace-pre-line fixed z-50 max-w-xs text-white text-xs leading-snug px-2.5 py-1.5 rounded-md bg-gray-600 shadow-lg pointer-events-none opacity-0 transition-opacity duration-150"></div>
 
-  <!-- ── Add Price Dialog ────────────────────────────────────────────────── -->
-  <dialog id="add-price-dialog" class="w-full max-w-md p-6 border border-gray-300 rounded-lg">
-    <form id="add-price-form" class="flex flex-col gap-5">
+  <!-- ── Add/Edit Price Dialog ───────────────────────────────────────────── -->
+  <dialog id="price-dialog" class="w-full max-w-md p-6 border border-gray-300 rounded-lg">
+    <form id="price-form" class="flex flex-col gap-5">
       <div>
-        <p class="text-lg font-medium">Add a model price</p>
+        <p id="price-dialog-title" class="text-lg font-medium">Add a model price</p>
         <small class="text-gray-500">Matched by prefix against the model name returned by the API.</small>
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="col-span-2">
           <label for="price-model-prefix" class="block text-xs text-gray-500 uppercase tracking-wide mb-1">Model prefix</label>
           <input type="text" id="price-model-prefix" name="model_prefix" required placeholder="claude-sonnet-5"
-            class="w-full text-sm px-3 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
-          <small class="text-gray-500">Reusing an existing prefix adds another tiered rule to it.</small>
+            class="w-full text-sm px-3 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:bg-gray-100 disabled:text-gray-400">
         </div>
-        <div>
-          <label for="price-rule" class="block text-xs text-gray-500 uppercase tracking-wide mb-1">Rule</label>
-          <select id="price-rule" name="rule" required
-            class="w-full text-sm px-3 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
-            <option value="over" selected>Over</option>
-            <option value="under">Under (inclusive)</option>
-          </select>
-        </div>
-        <div>
-          <label for="price-rule-tokens" class="block text-xs text-gray-500 uppercase tracking-wide mb-1">Tokens</label>
-          <input type="number" step="1" min="0" id="price-rule-tokens" name="rule_tokens" required placeholder="0" value="0"
-            class="w-full text-sm px-3 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
-        </div>
-        <div class="col-span-2 my-4 border-b border-gray-200"></div>
         <div>
           <label for="price-input-per-m" class="block text-xs text-gray-500 uppercase tracking-wide mb-1">Input $/M</label>
           <input type="number" step="0.01" min="0" id="price-input-per-m" name="input_per_m" required placeholder="0"
@@ -138,19 +75,44 @@
         </div>
         <div>
           <label for="price-cache-write-per-m" class="block text-xs text-gray-500 uppercase tracking-wide mb-1">Cache write $/M</label>
-          <input type="number" step="0.01" min="0" id="price-cache-write-per-m" name="cache_write_per_m" required placeholder="0"
+          <input type="number" step="0.01" min="0" id="price-cache-write-per-m" name="cache_write_per_m" placeholder="0"
             class="w-full text-sm px-3 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
         </div>
         <div>
           <label for="price-cache-read-per-m" class="block text-xs text-gray-500 uppercase tracking-wide mb-1">Cache read $/M</label>
-          <input type="number" step="0.01" min="0" id="price-cache-read-per-m" name="cache_read_per_m" required placeholder="0"
+          <input type="number" step="0.01" min="0" id="price-cache-read-per-m" name="cache_read_per_m" placeholder="0"
+            class="w-full text-sm px-3 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
+        </div>
+        <div class="col-span-2 my-2 border-b border-gray-200"></div>
+        <div class="col-span-2">
+          <p class="text-xs text-gray-500 uppercase tracking-wide">Above 200k tokens (optional)</p>
+          <small class="text-gray-400">Overrides the rates above once a request's prompt size (input + cache tokens) passes 200,000. Leave blank to always use the base rate.</small>
+        </div>
+        <div>
+          <label for="price-input-per-m-above-200k" class="block text-xs text-gray-500 uppercase tracking-wide mb-1">Input $/M</label>
+          <input type="number" step="0.01" min="0" id="price-input-per-m-above-200k" name="input_per_m_above_200k" placeholder="—"
+            class="w-full text-sm px-3 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
+        </div>
+        <div>
+          <label for="price-output-per-m-above-200k" class="block text-xs text-gray-500 uppercase tracking-wide mb-1">Output $/M</label>
+          <input type="number" step="0.01" min="0" id="price-output-per-m-above-200k" name="output_per_m_above_200k" placeholder="—"
+            class="w-full text-sm px-3 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
+        </div>
+        <div>
+          <label for="price-cache-write-per-m-above-200k" class="block text-xs text-gray-500 uppercase tracking-wide mb-1">Cache write $/M</label>
+          <input type="number" step="0.01" min="0" id="price-cache-write-per-m-above-200k" name="cache_write_per_m_above_200k" placeholder="—"
+            class="w-full text-sm px-3 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
+        </div>
+        <div>
+          <label for="price-cache-read-per-m-above-200k" class="block text-xs text-gray-500 uppercase tracking-wide mb-1">Cache read $/M</label>
+          <input type="number" step="0.01" min="0" id="price-cache-read-per-m-above-200k" name="cache_read_per_m_above_200k" placeholder="—"
             class="w-full text-sm px-3 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
         </div>
       </div>
-      <div id="add-price-dialog-message" class="hidden text-xs px-3 py-2 rounded-md border"></div>
+      <div id="price-dialog-message" class="hidden text-xs px-3 py-2 rounded-md border"></div>
       <div class="flex justify-end w-full gap-2">
-        <button type="button" commandfor="add-price-dialog" command="close" class="text-gray-700 px-3 py-1.5 border border-gray-300 rounded-md hover:bg-gray-100">Cancel</button>
-        <button type="submit" class="text-white px-3 py-1.5 bg-emerald-600 rounded-md hover:bg-emerald-700">Add</button>
+        <button type="button" commandfor="price-dialog" command="close" class="text-gray-700 px-3 py-1.5 border border-gray-300 rounded-md hover:bg-gray-100">Cancel</button>
+        <button type="submit" id="price-dialog-submit" class="text-white px-3 py-1.5 bg-emerald-600 rounded-md hover:bg-emerald-700">Add</button>
       </div>
     </form>
   </dialog>
