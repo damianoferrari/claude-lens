@@ -47,6 +47,8 @@ import { copyTextToClipboard, downloadTextFile, esc, estimateBytes, fmtBytes, fm
    * had tier columns). Whether the tier actually applied to this exchange
    * is derived from its own token counts rather than stored on the
    * snapshot, since the 200k threshold is a fixed constant.
+   * @param {object} exchange - The exchange record, including `matched_price` and `raw_request_tokens`.
+   * @returns {string} HTML for the above-200k table rows, or an empty string when no override is set.
    */
   function above200kRowsHtml(exchange) {
     const price = exchange.matched_price;
