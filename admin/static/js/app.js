@@ -636,21 +636,24 @@ export async function copyTextToClipboard(button, text, idleLabel) {
  * Builds a setDialogMessage(type, text) function for one dialog: shows text
  * styled per type, or hides the element when text is falsy.
  * @param {string} elementId - Id of the message element inside the dialog.
- * @param {Object<string, string[]>} styles - classList to apply per type.
+ * @param {Object<string, string[]>} styles - class strings to apply per type; each entry may hold several space-separated classes.
  * @returns {function(?string, string): void} setDialogMessage(type, text).
  */
 export function makeDialogMessage(elementId, styles) {
+  const tokens = Object.fromEntries(
+    Object.entries(styles).map(([type, cls]) => [type, cls.flatMap((entry) => entry.split(/\s+/))]),
+  );
   return function setDialogMessage(type, text) {
     const el = document.getElementById(elementId);
     if (!el) return;
-    Object.values(styles).forEach((cls) => el.classList.remove(...cls));
+    Object.values(tokens).forEach((cls) => el.classList.remove(...cls));
     if (!text) {
       el.classList.add('hidden');
       el.textContent = '';
       return;
     }
     el.classList.remove('hidden');
-    el.classList.add(...styles[type]);
+    el.classList.add(...tokens[type]);
     el.textContent = text;
   };
 }

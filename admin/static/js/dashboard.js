@@ -165,9 +165,10 @@ import { pad, esc, fmtTokens, fmtCost, fmtCountdown, fmtTime, addCost, makeAbort
       ? `<input type="text" class="w-full max-w-56 text-sm px-1.5 py-0.5 border border-emerald-400 dark:border-emerald-600 rounded focus:outline-none focus:ring-1 focus:ring-emerald-400 session-name-input" value="${esc(editingDraft)}" maxlength="200">`
       : `<a href="/exchanges?q=${encodeURIComponent(sessionQuery)}" class="text-emerald-600 dark:text-emerald-400 font-medium hover:underline">${esc(session.session_name || fmtSessionId(session.session_id, 24))}</a>${session.session_name ? `<span class="block text-xs text-fg-subtle font-mono">${esc(fmtSessionId(session.session_id, 24))}</span>` : ''}`;
     return `<tr class="hover:bg-surface-hover">
-      <td class="px-4 py-2">
-        <label class="sr-only">Select session</label>
-        <input type="checkbox" class="session-select-checkbox" data-session-id="${esc(session.session_id)}" ${selectedSessionIds.has(session.session_id) ? 'checked' : ''}>
+      <td class="h-px">
+        <label class="flex h-full cursor-pointer items-center px-4 py-2">
+          <input type="checkbox" class="session-select-checkbox cursor-pointer" aria-label="Select session" data-session-id="${esc(session.session_id)}" ${selectedSessionIds.has(session.session_id) ? 'checked' : ''}>
+        </label>
       </td>
       <td class="px-4 py-2 session-name-cell" data-session-id="${esc(session.session_id)}">${nameHtml}</td>
       <td class="text-right text-fg px-4 py-2">${session.exchange_count}</td>
