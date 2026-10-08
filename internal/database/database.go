@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS settings (
     litellm_last_synced_at         REAL    NOT NULL DEFAULT 0,
     litellm_last_sync_error        TEXT    NOT NULL DEFAULT '',
     litellm_last_attempt_at        REAL    NOT NULL DEFAULT 0,
+    price_sync_provider            TEXT    NOT NULL DEFAULT 'litellm',
     updated_at                     REAL    NOT NULL
 );
 
@@ -164,6 +165,7 @@ var newColumns = map[string][]string{
 	"settings": {
 		"litellm_last_sync_error TEXT NOT NULL DEFAULT ''",
 		"litellm_last_attempt_at REAL NOT NULL DEFAULT 0",
+		"price_sync_provider TEXT NOT NULL DEFAULT 'litellm'",
 	},
 }
 

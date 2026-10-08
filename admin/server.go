@@ -13,9 +13,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/lfsc09/claude-lens/internal/bifrost"
 	"github.com/lfsc09/claude-lens/internal/database"
 	"github.com/lfsc09/claude-lens/internal/litellm"
 	"github.com/lfsc09/claude-lens/internal/logging"
+	"github.com/lfsc09/claude-lens/internal/pricesync"
 	"github.com/lfsc09/claude-lens/internal/pricing"
 	"github.com/lfsc09/claude-lens/internal/status"
 )
@@ -39,7 +41,8 @@ func NewServer(db *database.DB, est *pricing.Estimator, st *status.Flag, fr *sta
 	h := &handlers{
 		db: db, est: est, status: st, fresh: fr, limitersFresh: limitersFresh, logger: logger,
 		version: version, dbPath: dbPath, logPath: logging.FilePath(logDir),
-		litellmClient: litellm.NewClient(), proxyBaseURL: proxyBaseURL, proxyAuthToken: proxyAuthToken,
+		priceProviders: pricesync.Providers{LiteLLM: litellm.NewClient(), Bifrost: bifrost.NewClient()},
+		proxyBaseURL:   proxyBaseURL, proxyAuthToken: proxyAuthToken,
 	}
 
 	staticContent, err := fs.Sub(staticFS, "static")
@@ -86,7 +89,7 @@ func NewServer(db *database.DB, est *pricing.Estimator, st *status.Flag, fr *sta
 	mux.HandleFunc("GET /api/stream", h.sseStream)
 	mux.HandleFunc("GET /api/prices", h.listPrices)
 	mux.HandleFunc("POST /api/prices", h.createPrice)
-	mux.HandleFunc("POST /api/prices/sync-litellm", h.syncPricesFromLiteLLM)
+	mux.HandleFunc("POST /api/prices/sync", h.syncPrices)
 	mux.HandleFunc("PUT /api/prices/{id}", h.updatePrice)
 	mux.HandleFunc("DELETE /api/prices/{id}", h.deletePrice)
 	mux.HandleFunc("GET /api/limiters", h.listLimiters)

@@ -657,7 +657,7 @@ func TestSyncPricesFromLiteLLM_UpsertsAndReportsCounts(t *testing.T) {
 	// claude-sonnet-5 already exists among the seeded defaults, so it
 	// should be updated in place; brand-new-model has no existing row, so
 	// it should be created.
-	rec := doJSON(t, s, http.MethodPost, "/api/prices/sync-litellm", nil)
+	rec := doJSON(t, s, http.MethodPost, "/api/prices/sync", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -694,7 +694,7 @@ func TestSyncPricesFromLiteLLM_NonLiteLLMUpstreamIsBadGateway(t *testing.T) {
 	defer notLiteLLM.Close()
 
 	s, _, _, _, _ := newTestServerWithProxy(t, notLiteLLM.URL, "")
-	rec := doJSON(t, s, http.MethodPost, "/api/prices/sync-litellm", nil)
+	rec := doJSON(t, s, http.MethodPost, "/api/prices/sync", nil)
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want %d for a non-LiteLLM upstream", rec.Code, http.StatusBadGateway)
 	}
@@ -709,10 +709,34 @@ func TestSyncPricesFromLiteLLM_InternalErrorIsNot502(t *testing.T) {
 	s, db, _, _, _ := newTestServerWithProxy(t, litellmSrv.URL, "")
 	db.Close() // fetch succeeds, but the subsequent upsert now fails with a DB error, not a reachability one.
 
-	rec := doJSON(t, s, http.MethodPost, "/api/prices/sync-litellm", nil)
+	rec := doJSON(t, s, http.MethodPost, "/api/prices/sync", nil)
 	if rec.Code == http.StatusBadGateway {
 		t.Errorf("status = %d, want anything but 502 — the UI greys out its sync button on 502, "+
 			"which a mere DB error shouldn't trigger", rec.Code)
+	}
+}
+
+func TestSyncPrices_UsesBifrostWhenConfigured(t *testing.T) {
+	bifrostSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"id":"bedrock/us.anthropic.claude-brand-new-model","pricing":{"prompt":"0.000001","completion":"0.000002"}}]}`))
+	}))
+	defer bifrostSrv.Close()
+
+	s, db, _, _, _ := newTestServerWithProxy(t, bifrostSrv.URL, "sk-test")
+	if err := db.UpdatePriceSyncProvider(context.Background(), database.ProviderBifrost, 1); err != nil {
+		t.Fatalf("UpdatePriceSyncProvider: %v", err)
+	}
+
+	rec := doJSON(t, s, http.MethodPost, "/api/prices/sync", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp pricesync.Result
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Created != 1 {
+		t.Errorf("got created=%d, want 1", resp.Created)
 	}
 }
 

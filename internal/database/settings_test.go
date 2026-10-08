@@ -20,6 +20,9 @@ func TestGetSettings_SeededOnFreshDB(t *testing.T) {
 	if s.LiteLLMLastSyncError != "" {
 		t.Errorf("LiteLLMLastSyncError = %q, want empty (no attempt yet)", s.LiteLLMLastSyncError)
 	}
+	if s.PriceSyncProvider != defaultPriceSyncProvider {
+		t.Errorf("PriceSyncProvider = %q, want default %q", s.PriceSyncProvider, defaultPriceSyncProvider)
+	}
 }
 
 func TestUpdateLiteLLMSyncInterval(t *testing.T) {
@@ -107,5 +110,41 @@ func TestMarkLiteLLMSynced_ClearsAPriorFailure(t *testing.T) {
 	}
 	if s.LiteLLMLastAttemptAt != 999 {
 		t.Errorf("LiteLLMLastAttemptAt = %v, want 999 (a success is also an attempt)", s.LiteLLMLastAttemptAt)
+	}
+}
+
+func TestUpdatePriceSyncProvider(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if err := db.UpdatePriceSyncProvider(ctx, ProviderBifrost, 200); err != nil {
+		t.Fatalf("UpdatePriceSyncProvider: %v", err)
+	}
+	s, err := db.GetSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if s.PriceSyncProvider != ProviderBifrost || s.UpdatedAt != 200 {
+		t.Errorf("got %+v, want provider=%q updated_at=200", s, ProviderBifrost)
+	}
+}
+
+func TestUpdatePriceSyncProvider_ClearsAPriorFailure(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if err := db.MarkLiteLLMSyncFailed(ctx, "some earlier failure", 100); err != nil {
+		t.Fatalf("MarkLiteLLMSyncFailed: %v", err)
+	}
+	if err := db.UpdatePriceSyncProvider(ctx, ProviderBifrost, 200); err != nil {
+		t.Fatalf("UpdatePriceSyncProvider: %v", err)
+	}
+
+	s, err := db.GetSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if s.LiteLLMLastSyncError != "" {
+		t.Errorf("LiteLLMLastSyncError = %q, want cleared by switching provider — a failure against the old provider says nothing about the new one", s.LiteLLMLastSyncError)
 	}
 }

@@ -60,6 +60,14 @@
           <div id="sync-litellm-panel"
             class="hidden flex flex-col absolute right-0 z-10 w-72 gap-3 mt-2 p-4 bg-surface border border-line rounded-lg shadow-lg">
             <div class="flex items-center gap-1.5">
+              <label for="price-sync-provider" class="text-xs text-fg-muted whitespace-nowrap">Sync prices from</label>
+              <select id="price-sync-provider"
+                class="flex-1 text-sm px-2 py-1.5 border border-line-strong rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">
+                <option value="litellm">LiteLLM</option>
+                <option value="bifrost">Bifrost</option>
+              </select>
+            </div>
+            <div class="flex items-center gap-1.5">
               <label for="litellm-sync-interval" class="text-xs text-fg-muted whitespace-nowrap">Auto-sync every</label>
               <input type="number" id="litellm-sync-interval" min="0" step="1" placeholder="60"
                 class="w-16 text-sm px-2 py-1.5 border border-line-strong rounded focus:outline-none focus:ring-1 focus:ring-emerald-500">

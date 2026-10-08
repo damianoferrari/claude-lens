@@ -12,7 +12,6 @@ import (
 
 	"github.com/lfsc09/claude-lens/internal/database"
 	"github.com/lfsc09/claude-lens/internal/files"
-	"github.com/lfsc09/claude-lens/internal/litellm"
 	"github.com/lfsc09/claude-lens/internal/pricesync"
 	"github.com/lfsc09/claude-lens/internal/pricing"
 	"github.com/lfsc09/claude-lens/internal/status"
@@ -49,10 +48,11 @@ type handlers struct {
 	dbPath        string
 	logPath       string
 
-	// litellmClient/proxyBaseURL/proxyAuthToken back syncPricesFromLiteLLM.
+	// priceProviders/proxyBaseURL/proxyAuthToken back syncPrices.
 	// proxyBaseURL/proxyAuthToken are the same upstream claude-lens' proxy
-	// forwards to — only meaningful when that upstream is a LiteLLM proxy.
-	litellmClient  *litellm.Client
+	// forwards to — only meaningful when that upstream is also the price
+	// sync provider's gateway.
+	priceProviders pricesync.Providers
 	proxyBaseURL   string
 	proxyAuthToken string
 }
@@ -397,18 +397,30 @@ func (h *handlers) createPrice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
-// syncPricesFromLiteLLM triggers an on-demand internal/pricesync.Sync — the
-// same sync also run periodically in the background (see main.go) — and
-// reports what it did so the admin UI can show a meaningful summary instead
-// of a bare "ok".
+// syncPrices triggers an on-demand internal/pricesync.Sync, against
+// whichever provider database.Settings.PriceSyncProvider currently names —
+// the same sync also run periodically in the background (see main.go) —
+// and reports what it did so the admin UI can show a meaningful summary
+// instead of a bare "ok".
 //
 // Status code distinguishes the failure kind: 502 specifically means the
-// upstream isn't a LiteLLM proxy (see pricesync.ErrUpstreamUnavailable),
+// upstream isn't that provider's gateway (see pricesync.ErrUpstreamUnavailable),
 // which the Prices page's JS uses to grey out the manual sync button —
 // anything else (e.g. a DB write error) isn't a capability signal, so it
 // stays a plain 500 and the button stays usable for an immediate retry.
-func (h *handlers) syncPricesFromLiteLLM(w http.ResponseWriter, r *http.Request) {
-	result, err := pricesync.Sync(r.Context(), h.db, h.est, h.litellmClient, h.proxyBaseURL, h.proxyAuthToken)
+func (h *handlers) syncPrices(w http.ResponseWriter, r *http.Request) {
+	settings, err := h.db.GetSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	client, err := h.priceProviders.Resolve(settings.PriceSyncProvider)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	result, err := pricesync.Sync(r.Context(), h.db, h.est, client, h.proxyBaseURL, h.proxyAuthToken)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, pricesync.ErrUpstreamUnavailable) {

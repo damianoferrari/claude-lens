@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lfsc09/claude-lens/internal/bifrost"
 	"github.com/lfsc09/claude-lens/internal/database"
 	"github.com/lfsc09/claude-lens/internal/litellm"
+	"github.com/lfsc09/claude-lens/internal/priceprovider"
 	"github.com/lfsc09/claude-lens/internal/pricing"
 )
 
@@ -247,7 +249,7 @@ func TestRunLoop_SyncsImmediatelyWhenDueThenStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		RunLoop(ctx, db, est, litellm.NewClient(), srv.URL, "")
+		RunLoop(ctx, db, est, Providers{LiteLLM: litellm.NewClient()}, srv.URL, "")
 		close(done)
 	}()
 
@@ -302,7 +304,7 @@ func TestRunLoop_ZeroIntervalNeverSyncs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		RunLoop(ctx, db, est, litellm.NewClient(), srv.URL, "")
+		RunLoop(ctx, db, est, Providers{LiteLLM: litellm.NewClient()}, srv.URL, "")
 		close(done)
 	}()
 
@@ -317,5 +319,54 @@ func TestRunLoop_ZeroIntervalNeverSyncs(t *testing.T) {
 
 	if hits != 0 {
 		t.Errorf("got %d requests to the LiteLLM server, want 0 (sync interval disabled)", hits)
+	}
+}
+
+func TestProviders_Resolve(t *testing.T) {
+	litellmClient := litellm.NewClient()
+	bifrostClient := bifrost.NewClient()
+	providers := Providers{LiteLLM: litellmClient, Bifrost: bifrostClient}
+
+	tests := []struct {
+		kind string
+		want priceprovider.Fetcher
+	}{
+		{kind: "", want: litellmClient},
+		{kind: database.ProviderLiteLLM, want: litellmClient},
+		{kind: database.ProviderBifrost, want: bifrostClient},
+	}
+	for _, tt := range tests {
+		got, err := providers.Resolve(tt.kind)
+		if err != nil {
+			t.Errorf("Resolve(%q): unexpected error: %v", tt.kind, err)
+		}
+		if got != tt.want {
+			t.Errorf("Resolve(%q) = %v, want %v", tt.kind, got, tt.want)
+		}
+	}
+
+	if _, err := providers.Resolve("not-a-real-provider"); err == nil {
+		t.Error("Resolve(unknown kind): expected an error")
+	}
+}
+
+func TestSync_WithBifrostProvider(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"id":"bedrock/us.anthropic.claude-brand-new-model","pricing":{"prompt":"0.000001","completion":"0.000002"}}]}`))
+	}))
+	defer srv.Close()
+
+	db := openTestDB(t)
+	est := pricing.New(db)
+	if err := est.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	result, err := Sync(context.Background(), db, est, bifrost.NewClient(), srv.URL, "")
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if result.Created != 1 || len(result.Models) != 1 {
+		t.Errorf("got %+v, want 1 created model", result)
 	}
 }

@@ -1,8 +1,9 @@
-// Package pricesync keeps claude-lens's model_prices table in sync with a
-// LiteLLM proxy's authoritative per-model rates, both on demand (the admin
-// UI's "Sync from LiteLLM" button) and on a background schedule stored in
-// the database (see database.Settings — an admin-editable schedule lives
-// in the DB, not an env var, so changing it never needs a restart).
+// Package pricesync keeps claude-lens's model_prices table in sync with
+// the configured upstream gateway's authoritative per-model rates, both on
+// demand (the admin UI's manual sync button) and on a background schedule
+// stored in the database (see database.Settings — an admin-editable
+// schedule and provider choice live in the DB, not an env var, so changing
+// either never needs a restart).
 package pricesync
 
 import (
@@ -13,7 +14,7 @@ import (
 	"time"
 
 	"github.com/lfsc09/claude-lens/internal/database"
-	"github.com/lfsc09/claude-lens/internal/litellm"
+	"github.com/lfsc09/claude-lens/internal/priceprovider"
 	"github.com/lfsc09/claude-lens/internal/pricing"
 )
 
@@ -26,29 +27,51 @@ type Result struct {
 }
 
 // ErrUpstreamUnavailable wraps a Sync failure that specifically means "this
-// upstream doesn't support LiteLLM sync at all" (the /model/info fetch
-// itself failed) — as opposed to some other failure further down Sync's
-// pipeline (e.g. a DB write error), which says nothing about whether the
-// upstream is reachable. Callers use errors.Is against this to decide
-// whether the failure is a genuine capability signal: the admin API maps
-// it to 502 (see admin.syncPricesFromLiteLLM), which the Prices page uses
-// to grey out its manual sync button.
-var ErrUpstreamUnavailable = errors.New("litellm upstream unavailable")
+// upstream doesn't support price sync at all" (the fetch itself failed) —
+// as opposed to some other failure further down Sync's pipeline (e.g. a DB
+// write error), which says nothing about whether the upstream is reachable.
+// Callers use errors.Is against this to decide whether the failure is a
+// genuine capability signal: the admin API maps it to 502 (see
+// admin.syncPrices), which the Prices page uses to grey out its manual
+// sync button.
+var ErrUpstreamUnavailable = errors.New("price sync upstream unavailable")
 
-// Sync pulls per-model rates from baseURL's LiteLLM /model/info endpoint
-// and upserts each model's price row into db — see database.UpsertPriceFromSync
-// for why a manually configured above-200k override survives a sync that
-// doesn't report that tier — then refreshes est so the new rates apply
-// immediately and marks the sync's completion time (see
-// database.MarkLiteLLMSynced), so RunLoop's
-// staleness check doesn't immediately fire again right after. Returns an
-// error, without changing anything, if the fetch itself fails (e.g. baseURL
-// isn't a LiteLLM proxy) — wrapped in ErrUpstreamUnavailable — and records
-// that failure via database.MarkLiteLLMSyncFailed regardless of whether
-// this call came from the admin UI's button or RunLoop's own schedule, so
-// the admin UI can grey out the button the moment *any* attempt establishes
-// the upstream doesn't support this at all, not just a scheduled one.
-func Sync(ctx context.Context, db *database.DB, est *pricing.Estimator, client *litellm.Client, baseURL, authToken string) (Result, error) {
+// Providers holds one Fetcher per upstream gateway shape claude-lens knows
+// how to sync prices from. Only one is ever active at a time — see Resolve.
+type Providers struct {
+	LiteLLM priceprovider.Fetcher
+	Bifrost priceprovider.Fetcher
+}
+
+// Resolve returns the Fetcher for kind — a database.Settings.PriceSyncProvider
+// value. An empty kind resolves to LiteLLM, matching the pre-provider-choice
+// default so an existing database without that column migrated up yet
+// still syncs the way it always did.
+func (p Providers) Resolve(kind string) (priceprovider.Fetcher, error) {
+	switch kind {
+	case "", database.ProviderLiteLLM:
+		return p.LiteLLM, nil
+	case database.ProviderBifrost:
+		return p.Bifrost, nil
+	default:
+		return nil, fmt.Errorf("unknown price sync provider %q", kind)
+	}
+}
+
+// Sync pulls per-model rates from baseURL via client and upserts each
+// model's price row into db — see database.UpsertPriceFromSync for why a
+// manually configured above-200k override survives a sync that doesn't
+// report that tier — then refreshes est so the new rates apply immediately
+// and marks the sync's completion time (see database.MarkLiteLLMSynced), so
+// RunLoop's staleness check doesn't immediately fire again right after.
+// Returns an error, without changing anything, if the fetch itself fails
+// (e.g. baseURL isn't an upstream of the kind client expects) — wrapped in
+// ErrUpstreamUnavailable — and records that failure via
+// database.MarkLiteLLMSyncFailed regardless of whether this call came from
+// the admin UI's button or RunLoop's own schedule, so the admin UI can grey
+// out the button the moment *any* attempt establishes the upstream doesn't
+// support this at all, not just a scheduled one.
+func Sync(ctx context.Context, db *database.DB, est *pricing.Estimator, client priceprovider.Fetcher, baseURL, authToken string) (Result, error) {
 	now := float64(time.Now().Unix())
 
 	prices, fetchErr := client.FetchModelPrices(ctx, baseURL, authToken)
@@ -108,14 +131,16 @@ func syncDue(settings database.Settings, now time.Time) bool {
 // run of failures still retries once per interval, not on every poll. An
 // interval of 0 disables the loop entirely, checked fresh on every poll so
 // an admin toggling it via the UI takes effect within a minute, no restart
-// needed. The admin UI's manual "Sync from LiteLLM" button is wired
-// separately and unaffected either way.
+// needed. The admin UI's manual sync button is wired separately and
+// unaffected either way. Which provider syncs from is re-read from
+// settings on every due check too, so switching it in the admin UI also
+// takes effect without a restart.
 //
 // Failures are logged, not propagated: this runs unconditionally whether or
-// not the configured upstream is actually a LiteLLM proxy, so a direct-
-// Anthropic setup fails every due check by design (see
-// litellm.FetchModelPrices) and that must never take the process down.
-func RunLoop(ctx context.Context, db *database.DB, est *pricing.Estimator, client *litellm.Client, baseURL, authToken string) {
+// not the configured upstream is actually reachable as the configured
+// provider's gateway, so a mismatched setup fails every due check by design
+// and that must never take the process down.
+func RunLoop(ctx context.Context, db *database.DB, est *pricing.Estimator, providers Providers, baseURL, authToken string) {
 	logger := slog.Default().With("component", "pricesync")
 
 	checkAndSyncIfDue := func() {
@@ -128,12 +153,18 @@ func RunLoop(ctx context.Context, db *database.DB, est *pricing.Estimator, clien
 			return
 		}
 
-		result, err := Sync(ctx, db, est, client, baseURL, authToken)
+		client, err := providers.Resolve(settings.PriceSyncProvider)
 		if err != nil {
-			logger.Warn("litellm price sync failed", "error", err)
+			logger.Warn("resolve price sync provider", "error", err)
 			return
 		}
-		logger.Info("litellm price sync complete", "created", result.Created, "updated", result.Updated, "models", len(result.Models))
+
+		result, err := Sync(ctx, db, est, client, baseURL, authToken)
+		if err != nil {
+			logger.Warn("price sync failed", "provider", settings.PriceSyncProvider, "error", err)
+			return
+		}
+		logger.Info("price sync complete", "provider", settings.PriceSyncProvider, "created", result.Created, "updated", result.Updated, "models", len(result.Models))
 	}
 
 	checkAndSyncIfDue()

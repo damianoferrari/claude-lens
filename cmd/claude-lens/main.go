@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/lfsc09/claude-lens/admin"
+	"github.com/lfsc09/claude-lens/internal/bifrost"
 	"github.com/lfsc09/claude-lens/internal/config"
 	"github.com/lfsc09/claude-lens/internal/database"
 	"github.com/lfsc09/claude-lens/internal/litellm"
@@ -107,7 +108,8 @@ func main() {
 	}()
 	go func() {
 		defer wg.Done()
-		pricesync.RunLoop(ctx, db, est, litellm.NewClient(), cfg.AnthropicBaseURL, cfg.AnthropicAuthToken)
+		providers := pricesync.Providers{LiteLLM: litellm.NewClient(), Bifrost: bifrost.NewClient()}
+		pricesync.RunLoop(ctx, db, est, providers, cfg.AnthropicBaseURL, cfg.AnthropicAuthToken)
 	}()
 
 	<-ctx.Done()

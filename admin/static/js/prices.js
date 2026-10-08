@@ -149,13 +149,24 @@ import { esc, extractErrorMessage, fmtCost, fmtTime, initNavPolling, makeDialogM
     loadPrices();
   });
 
-  // ── Sync from LiteLLM ─────────────────────────────────────────────────
+  // ── Sync prices (LiteLLM or Bifrost — exactly one active at a time) ────
   const syncMenu = document.getElementById('sync-litellm-menu');
   const syncToggle = document.getElementById('sync-litellm-toggle');
   const syncPanel = document.getElementById('sync-litellm-panel');
   const syncChevron = document.getElementById('sync-litellm-chevron');
   const syncBtn = document.getElementById('sync-litellm-btn');
   const syncMessageEl = document.getElementById('litellm-sync-message');
+  const providerSelect = document.getElementById('price-sync-provider');
+
+  const PROVIDER_LABELS = { litellm: 'LiteLLM', bifrost: 'Bifrost' };
+
+  function providerLabel() {
+    return PROVIDER_LABELS[providerSelect?.value] ?? 'upstream';
+  }
+
+  function applySyncButtonLabel() {
+    if (syncBtn) syncBtn.textContent = `Sync from ${providerLabel()}`;
+  }
 
   function toggleSyncPanel(open = syncPanel.classList.contains('hidden')) {
     syncPanel.classList.toggle('hidden', !open);
@@ -201,7 +212,7 @@ import { esc, extractErrorMessage, fmtCost, fmtTime, initNavPolling, makeDialogM
     if (!syncBtn) return;
     syncBtn.disabled = !!errorMsg;
     if (errorMsg) {
-      syncMessageWithLastSynced(`LiteLLM sync unavailable: ${errorMsg}`, true);
+      syncMessageWithLastSynced(`${providerLabel()} sync unavailable: ${errorMsg}`, true);
     } else {
       syncMessageWithLastSynced('', false);
     }
@@ -212,9 +223,26 @@ import { esc, extractErrorMessage, fmtCost, fmtTime, initNavPolling, makeDialogM
     if (!res.ok || !syncIntervalInput) return;
     const settings = await res.json();
     syncIntervalInput.value = settings.litellm_sync_interval_minutes;
+    if (providerSelect) providerSelect.value = settings.price_sync_provider;
+    applySyncButtonLabel();
     lastSyncedAt = settings.litellm_last_synced_at;
     applyLiteLLMAvailability(settings.litellm_last_sync_error);
   }
+
+  // Switching providers makes the previously recorded error meaningless (it
+  // was against the old upstream) — database.UpdatePriceSyncProvider clears
+  // it server-side, so re-enable the button optimistically here too rather
+  // than waiting on the next full settings load.
+  providerSelect?.addEventListener('change', async () => {
+    const provider = providerSelect.value;
+    const res = await putJSON('/api/settings', { price_sync_provider: provider });
+    if (!res.ok) {
+      setSyncMessage(await extractErrorMessage(res, 'Failed to switch provider.'), true);
+      return;
+    }
+    applySyncButtonLabel();
+    applyLiteLLMAvailability('');
+  });
 
   syncIntervalInput?.addEventListener('change', async () => {
     const minutes = parseInt(syncIntervalInput.value, 10);
@@ -233,12 +261,13 @@ import { esc, extractErrorMessage, fmtCost, fmtTime, initNavPolling, makeDialogM
   syncBtn?.addEventListener('click', async () => {
     syncBtn.disabled = true;
     setSyncMessage('Syncing…', false);
-    // Only a 502 (see admin.syncPricesFromLiteLLM) means "this upstream
-    // isn't a LiteLLM proxy" — any other failure (e.g. a DB error) isn't a
-    // capability signal, so the button stays usable for an immediate retry.
+    // Only a 502 (see admin.syncPrices) means "this upstream isn't the
+    // configured provider's gateway" — any other failure (e.g. a DB error)
+    // isn't a capability signal, so the button stays usable for an
+    // immediate retry.
     let keepDisabled = false;
     try {
-      const res = await postJSON('/api/prices/sync-litellm', {});
+      const res = await postJSON('/api/prices/sync', {});
       if (!res.ok) {
         setSyncMessage(await extractErrorMessage(res, 'Sync failed.'), true);
         keepDisabled = res.status === 502;
